@@ -1,0 +1,15 @@
+{
+  "name": "일당관리",
+  "short_name": "일당관리",
+  "description": "인부 일별 공수·일당·인건비 관리",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f5f8",
+  "theme_color": "#1f4e79",
+  "lang": "ko",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

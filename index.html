@@ -239,7 +239,7 @@ function load() {
 function save() {
   S.meta.updatedAt = Date.now();
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { toast('⚠ 브라우저 저장 실패 (저장공간 부족?)'); }
-  scheduleFile(); updateChip();
+  scheduleFile(); scheduleMirror(); updateChip();
 }
 function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, date: ui.date, site: ui.site, from: ui.from, to: ui.to, rsite: ui.rsite, pii: ui.pii })); } catch (e) {} }
 
@@ -307,6 +307,60 @@ async function openFile() {
     await idbSet('handle', h); save(); toast('불러왔습니다'); render();
   } catch (e) { if (e.name !== 'AbortError') toast('열기 실패: ' + e.message); }
 }
+/* ---- 앱 내부 이중 저장 (IndexedDB + OPFS) : 모바일 포함 모든 기기 ---- */
+let mirrorT;
+function scheduleMirror() { clearTimeout(mirrorT); mirrorT = setTimeout(mirror, 800); }
+async function mirror() {
+  const txt = JSON.stringify(S);
+  try {
+    const prev = await idbGet('snapshot');
+    if (prev && Date.now() - prev.t > 6 * 3600e3) await idbSet('snapshot_prev', prev);
+    await idbSet('snapshot', { t: Date.now(), data: txt });
+  } catch (e) {}
+  try {
+    if (navigator.storage && navigator.storage.getDirectory) {
+      const root = await navigator.storage.getDirectory(), fh = await root.getFileHandle('ildang_data.json', { create: true });
+      if (fh.createWritable) { const w = await fh.createWritable(); await w.write(txt); await w.close(); }
+    }
+  } catch (e) {}
+}
+async function recover() {
+  try {
+    const sn = await idbGet('snapshot');
+    if (!sn || S.workers.length || Object.keys(S.records).length) return;
+    const d = JSON.parse(sn.data);
+    if (d && d.workers && d.workers.length && confirm(`이 기기에 저장돼 있던 데이터를 찾았습니다.\n(${new Date(sn.t).toLocaleString('ko-KR')} · 인부 ${d.workers.length}명 · 기록 ${Object.keys(d.records || {}).length}건)\n복구할까요?`)) {
+      S = d; ui.site = (S.sites.find(x => x.active) || S.sites[0]).id; save(); render(); toast('자동 저장본에서 복구했습니다');
+    }
+  } catch (e) {}
+}
+async function snapDlg() {
+  let a, b; try { a = await idbGet('snapshot'); b = await idbGet('snapshot_prev'); } catch (e) {}
+  const row = (k, label, x) => {
+    if (!x) return ''; let d; try { d = JSON.parse(x.data); } catch (e) { return ''; }
+    return `<div class="bar" style="justify-content:space-between"><span><b>${label}</b><br><span class="small muted">${new Date(x.t).toLocaleString('ko-KR')} · 인부 ${d.workers.length}명 · 기록 ${Object.keys(d.records).length}건</span></span><button data-act="snapPick" data-k="${k}">이 시점으로 복구</button></div>`;
+  };
+  openDlg(`<div class="dh">자동 저장본 복구</div><div class="db"><p class="muted small" style="margin-top:0">입력할 때마다 이 기기 안에 복사본이 자동으로 만들어집니다. 최신본과, 약 6시간 이상 전의 이전본이 보관됩니다.</p>${row('snapshot', '최신 자동 저장본', a) + row('snapshot_prev', '이전 자동 저장본', b) || '<p>저장된 자동 저장본이 아직 없습니다.</p>'}</div><div class="df"><button onclick="closeDlg()">닫기</button></div>`);
+}
+async function shareBackup() {
+  const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' }), name = `일당관리_백업_${today()}.json`, file = new File([blob], name, { type: 'application/json' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); S.meta.lastBackup = Date.now(); save(); toast('백업을 저장했습니다'); if (ui.tab === 'settings') viewSettings(); if (ui.tab === 'entry') renderEntry(); return; }
+  } catch (e) { if (e.name === 'AbortError') return; }
+  download(blob, name); S.meta.lastBackup = Date.now(); save(); toast('백업 파일을 내려받았습니다 (다운로드 폴더 확인)'); if (ui.tab === 'settings') viewSettings(); if (ui.tab === 'entry') renderEntry();
+}
+function backupBanner() {
+  if (fileHandle && filePerm) return '';
+  if (!Object.keys(S.records).length) return '';
+  const days = S.meta.lastBackup ? Math.floor((Date.now() - S.meta.lastBackup) / 864e5) : null;
+  if (days !== null && days < 7) return '';
+  try { if (localStorage.getItem('ildang_bk_snooze') === today()) return ''; } catch (e) {}
+  return `<div class="info">💾 ${days === null ? '아직 백업한 적이 없습니다' : days + '일 동안 백업하지 않았습니다'}. 파일로 한 번 백업해 두면 안전합니다. <button data-act="bkShare">지금 백업</button> <button data-act="bkSnooze">오늘은 그만</button></div>`;
+}
+async function checkPersist() {
+  const el = $('#persistState'); if (!el) return;
+  try { const ok = navigator.storage && navigator.storage.persisted && await navigator.storage.persisted(); el.innerHTML = ok ? '<b style="color:var(--ok)">켜짐</b> (브라우저가 임의로 지우지 않음)' : '<b style="color:var(--warn)">꺼짐</b> — 앱으로 설치하면 보호될 가능성이 높아집니다'; } catch (e) { el.textContent = '확인 불가'; }
+}
 function updateChip() {
   const c = $('#saveChip'); if (!c) return;
   c.classList.remove('bad');
@@ -321,7 +375,7 @@ const app = $('#app');
 function render() {
   $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === ui.tab));
   ({ entry: viewEntry, workers: viewWorkers, report: viewReport, settings: viewSettings })[ui.tab]();
-  saveUI(); updateChip();
+  saveUI(); updateChip(); if (ui.tab === 'settings') checkPersist();
 }
 function openDlg(html) { const d = $('#dlg'); d.innerHTML = html; if (!d.open) d.showModal(); return d; }
 function closeDlg() { const d = $('#dlg'); if (d.open) d.close(); }
@@ -388,7 +442,7 @@ function renderEntry() {
   let warn = '';
   if (st && ((st.start && d < st.start) || (st.end && d > st.end))) warn = `<div class="warn">⚠ ${esc(st.name)} 공사기간(${st.start || '시작 미정'} ~ ${st.end || '종료 미정'}) 밖의 날짜입니다.</div>`;
   if (!S.workers.length) warn += `<div class="info">등록된 인부가 없습니다. <b>[인부]</b> 탭에서 먼저 인부를 등록하세요.</div>`;
-  $('#dWarn').innerHTML = warn;
+  $('#dWarn').innerHTML = warn + backupBanner();
   const ws = entryWorkers();
   $('#dList').innerHTML = ws.map(rowHTML).join('') || '<p class="muted">표시할 인부가 없습니다.</p>';
   $('#chkAll').checked = ws.length > 0 && ws.every(w => ui.sel.includes(w.id));
@@ -763,14 +817,16 @@ function viewSettings() {
     ${location.protocol.startsWith('http') ? '' : '<p class="warn small">지금은 파일로 직접 열어서 설치 기능이 꺼져 있습니다. 웹 주소(https)로 접속하면 설치할 수 있습니다.</p>'}
     ${deferredInstall ? '<button class="pri" data-act="install">지금 설치</button>' : ''}</div>
   <div class="card"><h2>💾 저장 · 백업</h2>
-    <p>자동저장: 입력 즉시 이 기기의 브라우저에 저장됩니다.<br>저장 파일: ${fileState}</p>
+    <p>자동저장: 입력 즉시 이 기기의 브라우저에 저장되고, <b>앱 내부에 복사본이 한 번 더</b> 저장됩니다.<br>보호 저장(데이터 자동 삭제 방지): <span id="persistState">확인 중…</span><br>저장 파일: ${fileState}</p>
     <div class="bar">
       ${fsOK ? `<button class="pri" data-act="mkFile">저장 파일 만들기 / 위치 바꾸기</button><button data-act="opFile">기존 저장 파일 열기</button>` : ''}
+      <button class="${fsOK ? '' : 'pri'}" data-act="bkShare">📱 폰에 백업 저장 (공유 · 파일에 저장)</button>
       <button data-act="bkDown">백업 파일 내려받기 (.json)</button>
+      <button data-act="snap">자동 저장본 복구</button>
       <button data-act="bkUp">백업 파일 불러오기</button>
       <input type="file" id="bkFile" accept=".json,application/json" hidden>
     </div>
-    <p class="muted small" style="margin:0">마지막 수동 백업: ${lb} · 노트북에서 저장 파일을 <b>클라우드 동기화 폴더(OneDrive·구글 드라이브 등)</b>에 만들어 두면 PC가 고장 나도 안전합니다. 스마트폰은 노트북과 자동 동기화되지 않으므로 백업 파일로 옮기세요.</p></div>
+    <p class="muted small" style="margin:0">마지막 수동 백업: ${lb} · 노트북에서 저장 파일을 <b>클라우드 동기화 폴더(OneDrive·구글 드라이브 등)</b>에 만들어 두면 PC가 고장 나도 안전합니다. 스마트폰은 브라우저 보안상 지정한 파일에 자동으로 쓸 수 없으므로, 위의 <b>📱 폰에 백업 저장</b>으로 "파일에 저장"·구글 드라이브·카카오톡 등에 보관하세요. 노트북과도 자동 동기화되지 않으니 백업 파일로 옮기세요.</p></div>
   <div class="card"><h2>상호 · 사업주</h2><div class="fg">
     <label>상호(정산서 제목)<input id="coName" value="${esc(S.company.name)}"></label><label>사업주 이름<input id="coOwner" value="${esc(S.company.owner)}"></label></div></div>
   <div class="card"><h2>등급 · 기본 일당</h2><p class="muted small" style="margin-top:0">인부 등록 시 등급을 고르면 아래 일당이 기본값으로 들어갑니다. 인부별 개별 단가는 인부 정보에서 따로 바꿀 수 있습니다.</p>
@@ -841,7 +897,8 @@ const HELP = [
     <ul><li>입력하면 이 기기의 브라우저에 <b>바로 자동 저장</b>됩니다.</li>
     <li>노트북(크롬·엣지)은 설정 탭의 <kbd>저장 파일 만들기</kbd>로 파일을 하나 만들어 두면, 입력할 때마다 <b>그 파일에도 자동 저장</b>됩니다. OneDrive·구글 드라이브 폴더에 만들면 PC가 고장 나도 안전합니다.</li>
     <li>브라우저를 껐다 켠 뒤 위쪽 노란 버튼이 보이면 눌러서 파일 쓰기 권한을 다시 허용하세요.</li>
-    <li><b>백업 파일 내려받기 / 불러오기</b>로 데이터를 다른 기기로 옮길 수 있습니다.</li>
+    <li><b>스마트폰</b>은 브라우저 보안상 지정한 파일에 자동으로 쓸 수 없습니다. 대신 입력 내용이 <b>앱 내부에 이중으로 자동 저장</b>되고, 데이터가 비면 복구를 제안합니다. 설정의 <kbd>📱 폰에 백업 저장</kbd>으로 "파일에 저장"·구글 드라이브·카카오톡 등에 파일로 보관해 두세요. (오래 백업하지 않으면 알림이 뜹니다)</li>
+    <li><b>백업 파일 내려받기 / 불러오기</b>로 데이터를 다른 기기로 옮길 수 있습니다. 실수했을 때는 <kbd>자동 저장본 복구</kbd>를 쓰세요.</li>
     <li>⚠ 브라우저의 "사이트 데이터 삭제"를 하면 브라우저 저장분이 지워집니다. 저장 파일이나 백업 파일을 꼭 만들어 두세요.</li></ul>`],
   ['phone', '📱 스마트폰 · 앱 설치', [], `
     <ul><li>같은 웹 주소로 접속하면 화면이 스마트폰에 맞게 자동으로 바뀝니다.</li>
@@ -887,6 +944,9 @@ const A = {
   stMonth(el) { const d = new Date(); d.setMonth(d.getMonth() + (+el.dataset.d), 1); ui.from = iso(d); ui.to = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0)); $('#stFrom').value = ui.from; $('#stTo').value = ui.to; saveUI(); },
   stAll() { const R = buildReport('2000-01-01', '2099-12-31', ui.rsite); if (!R.rows.length) return toast('기록이 없습니다'); ui.from = R.minD; ui.to = R.maxD; $('#stFrom').value = ui.from; $('#stTo').value = ui.to; saveUI(); },
   mkFile: createFile, opFile: openFile, reauth: reauthFile,
+  bkShare: shareBackup, snap: snapDlg,
+  bkSnooze() { try { localStorage.setItem('ildang_bk_snooze', today()); } catch (e) {} renderEntry(); },
+  async snapPick(el) { const x = await idbGet(el.dataset.k); if (!x) return; if (!confirm('현재 데이터를 이 시점의 자동 저장본으로 교체합니다. 계속할까요?')) return; try { S = JSON.parse(x.data); ui.site = (S.sites.find(z => z.active) || S.sites[0]).id; save(); closeDlg(); render(); toast('복구했습니다'); } catch (e) { toast('복구 실패'); } },
   bkDown() { download(new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' }), `일당관리_백업_${today()}.json`); S.meta.lastBackup = Date.now(); save(); viewSettings(); toast('백업 파일을 저장했습니다'); },
   bkUp() { $('#bkFile').click(); },
   addGrade() { readSettings(); S.grades.push({ name: '새 등급', rate: 0 }); save(); viewSettings(); },
@@ -936,7 +996,7 @@ function welcome() {
 }
 load();
 render();
-initFile().then(() => { if (!S.meta.setupDone) welcome(); else if (fileHandle && !filePerm) toast('저장 파일 재연결이 필요합니다. 위쪽 노란 버튼을 눌러주세요'); });
+initFile().then(recover).then(() => { if (!S.meta.setupDone) welcome(); else if (fileHandle && !filePerm) toast('저장 파일 재연결이 필요합니다. 위쪽 노란 버튼을 눌러주세요'); });
 try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>

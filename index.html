@@ -657,6 +657,9 @@ function buildXlsx(R, pii) {
     rws.push([{ v: '일 합계', s: 4 }, '', ...dates.map(d => { const s = rs.reduce((a, r) => a + (r.byDate[d] || 0), 0); return s ? { v: s, s: 6 } : ''; }), { v: rs.reduce((a, r) => a + dates.reduce((b, d) => b + (r.byDate[d] || 0), 0), 0), s: 6 }]);
     sheets.push({ name: `공수표 ${m}`, rows: rws, cols: [10, 9, ...dates.map(() => 5.5), 8] });
   });
+  return packXlsx(sheets);
+}
+function packXlsx(sheets) {
   const files = [
     ['[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') + '</Types>'],
     ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
@@ -677,12 +680,33 @@ function exPdf() {
   let h = head + summaryHTML(R, ui.pii, '');
   if (R.bySite.length > 1) h += `<table style="width:auto"><thead><tr><th>현장</th><th class="n">총공수</th><th class="n">인건비(세전)</th></tr></thead><tbody>${R.bySite.map(s => `<tr><td>${esc(s.name)}</td><td class="n">${fu(s.units)}</td><td class="n">${won(s.gross)}</td></tr>`).join('')}</tbody></table>`;
   R.months.forEach(m => { const x = matrixHTML(R, m, ''); if (x) h += `<div class="pb">${head.replace('정산서', m.replace('-', '년 ') + '월 공수표')}${x}</div>`; });
+  printHTML(h, fname(R, 'pdf').replace(/\.pdf$/, ''));
+}
+function printHTML(h, title) {
   $('#printArea').innerHTML = h;
-  const old = document.title; document.title = fname(R, 'pdf').replace(/\.pdf$/, '');
+  const old = document.title; document.title = title;
   document.body.classList.add('printing');
   const done = () => { document.body.classList.remove('printing'); document.title = old; window.removeEventListener('afterprint', done); };
   window.addEventListener('afterprint', done);
   setTimeout(() => { window.print(); setTimeout(() => { if (document.body.classList.contains('printing') && !('onafterprint' in window)) done(); }, 500); }, 80);
+}
+function workerListData(pii) {
+  const ws = S.workers.slice().sort((a, b) => (b.active - a.active) || sortWorkers(a, b));
+  const head = ['No', '이름', '등급', '일당', '세금 구분', '연락처', '입사일', '상태', ...(pii ? ['주민번호', '주소', '은행', '계좌번호', '사업자번호'] : []), '메모'];
+  const body = ws.map((w, i) => [i + 1, w.name, w.grade, w.rate || 0, taxLabel(w), w.phone || '', w.joinDate || '', w.active ? '재직' : '퇴사', ...(pii ? [w.rrn || '', w.address || '', w.bank || '', w.account || '', w.bizNo || ''] : []), w.memo || '']);
+  return { head, body };
+}
+function exWorkersXlsx() {
+  if (!S.workers.length) return toast('등록된 인부가 없습니다');
+  const t = workerListData(ui.pii);
+  const rows = [[{ v: `${S.company.name || ''} 인부 명단`.trim(), s: 5 }], [`출력일 ${today()} · 총 ${t.body.length}명${ui.pii ? '' : ' (주민번호·계좌 제외)'}`], [], t.head.map(h => ({ v: h, s: 1 })), ...t.body.map(r => r.map((v, c) => c === 3 ? { v, s: 2 } : (typeof v === 'string' ? v : v)))];
+  download(packXlsx([{ name: '인부명단', rows, cols: [5, 12, 9, 12, 20, 15, 12, 8, ...(ui.pii ? [16, 30, 10, 18, 16] : []), 24] }]), `인부명단_${today()}.xlsx`);
+  toast('엑셀 파일을 저장했습니다');
+}
+function exWorkersPdf() {
+  if (!S.workers.length) return toast('등록된 인부가 없습니다');
+  const t = workerListData(ui.pii);
+  printHTML(`<h1>${esc(S.company.name || '')} 인부 명단</h1><p class="sub">출력일 ${today()} · 총 ${t.body.length}명${ui.pii ? '' : ' · 주민번호·계좌 제외'}</p><table><thead><tr>${t.head.map((h, c) => `<th class="${c === 3 ? 'n' : ''}">${h}</th>`).join('')}</tr></thead><tbody>${t.body.map(r => `<tr>${r.map((v, c) => `<td class="${c === 3 ? 'n' : ''}">${c === 3 ? won(v) : esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`, `인부명단_${today()}`);
 }
 async function exShare() {
   const R = curReport(); if (!R) return;
@@ -698,9 +722,22 @@ async function exShare() {
 
 /* ====================== 설정 ====================== */
 function viewSettings() {
+  if (!ui.from) { ui.from = monthStart(); ui.to = today(); }
   const lb = S.meta.lastBackup ? new Date(S.meta.lastBackup).toLocaleString('ko-KR') : '없음';
   const fileState = fileHandle ? (filePerm ? `<b style="color:var(--ok)">연결됨 (${esc(fileHandle.name)})</b> — 입력할 때마다 자동으로 파일에 저장됩니다.` : `<b style="color:var(--warn)">${esc(fileHandle.name)}</b> — 브라우저를 다시 연 뒤에는 권한 확인이 필요합니다. <button data-act="reauth">권한 허용하고 다시 연결</button>`) : (fsOK ? '<b style="color:var(--warn)">연결 안 됨</b> — 지금은 브라우저 안에만 저장됩니다.' : '이 브라우저(스마트폰 등)는 파일 자동저장을 지원하지 않아 <b>브라우저 저장 + 수동 백업</b>으로 사용합니다.');
   app.innerHTML = `
+  <div class="card"><h2>📤 엑셀 · PDF 저장</h2>
+    <p class="muted small" style="margin-top:0">정산서와 인부 명단을 파일로 저장합니다. PDF는 인쇄창에서 "PDF로 저장"을 고르세요.</p>
+    <div class="two">
+      <div><b>정산서</b> (공수표 포함)
+        <div class="bar" style="margin:8px 0 6px"><input type="date" id="stFrom" value="${ui.from || monthStart()}"> ~ <input type="date" id="stTo" value="${ui.to || today()}"></div>
+        <div class="bar" style="margin:0 0 6px"><select id="stSite">${siteOpts(ui.rsite, true)}</select>
+          <span class="chips"><button class="chip" data-act="stMonth" data-d="0">이번 달</button><button class="chip" data-act="stMonth" data-d="-1">지난 달</button><button class="chip" data-act="stAll">전체</button></span></div>
+        <div class="bar" style="margin:0"><button class="pri" data-act="exXlsx">📊 엑셀 저장</button><button class="pri" data-act="exPdf">📄 PDF 저장</button><button data-act="exShare">📤 공유</button></div></div>
+      <div><b>인부 명단</b> (연락처·등급·단가·세금 구분)
+        <div class="bar" style="margin:8px 0 0"><button class="pri" data-act="exWorkersXlsx">📊 엑셀 저장</button><button class="pri" data-act="exWorkersPdf">📄 PDF 저장</button></div></div>
+    </div>
+    <label class="small" style="display:block;margin-top:10px"><input type="checkbox" id="stPii" ${ui.pii ? 'checked' : ''}> 주민번호·계좌 등 개인정보 전체 포함 <span class="muted">(체크하지 않으면 제외하거나 가려서 저장)</span></label></div>
   <div class="card"><h2>📲 앱으로 설치 (웹앱)</h2>
     ${isStandalone() ? '<p>✅ 이미 앱으로 실행 중입니다.</p>' : ''}
     <p class="small" style="margin-top:0">설치하면 홈 화면·바탕화면 아이콘으로 열리고, 인터넷이 없어도 실행됩니다. 화면은 기기에 맞게 자동으로 바뀝니다.</p>
@@ -763,7 +800,9 @@ const A = {
   rpMonth(el) { const d = new Date(); d.setMonth(d.getMonth() + (+el.dataset.d), 1); ui.from = iso(d); ui.to = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0)); viewReport(); },
   rpAll() { ui.from = '2000-01-01'; ui.to = '2099-12-31'; const R = buildReport(ui.from, ui.to, ui.rsite); if (R.rows.length) { ui.from = R.minD; ui.to = R.maxD; } viewReport(); },
   rpSitePeriod() { const s = SITE(ui.rsite || ui.site); if (!s.start && !s.end) return toast('설정 탭에서 현장 공사기간을 먼저 입력하세요'); ui.from = s.start || ui.from; ui.to = s.end || ui.to; viewReport(); },
-  exXlsx, exPdf, exShare,
+  exXlsx, exPdf, exShare, exWorkersXlsx, exWorkersPdf,
+  stMonth(el) { const d = new Date(); d.setMonth(d.getMonth() + (+el.dataset.d), 1); ui.from = iso(d); ui.to = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0)); $('#stFrom').value = ui.from; $('#stTo').value = ui.to; saveUI(); },
+  stAll() { const R = buildReport('2000-01-01', '2099-12-31', ui.rsite); if (!R.rows.length) return toast('기록이 없습니다'); ui.from = R.minD; ui.to = R.maxD; $('#stFrom').value = ui.from; $('#stTo').value = ui.to; saveUI(); },
   mkFile: createFile, opFile: openFile, reauth: reauthFile,
   bkDown() { download(new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' }), `일당관리_백업_${today()}.json`); S.meta.lastBackup = Date.now(); save(); viewSettings(); toast('백업 파일을 저장했습니다'); },
   bkUp() { $('#bkFile').click(); },
@@ -789,7 +828,10 @@ document.addEventListener('change', e => {
   else if (t.id === 'rpFrom') { ui.from = t.value; renderReport(); saveUI(); }
   else if (t.id === 'rpTo') { ui.to = t.value; renderReport(); saveUI(); }
   else if (t.id === 'rpSite') { ui.rsite = t.value; renderReport(); saveUI(); }
-  else if (t.id === 'rpPii') { ui.pii = t.checked; saveUI(); }
+  else if (t.id === 'rpPii' || t.id === 'stPii') { ui.pii = t.checked; saveUI(); }
+  else if (t.id === 'stFrom') { ui.from = t.value; saveUI(); }
+  else if (t.id === 'stTo') { ui.to = t.value; saveUI(); }
+  else if (t.id === 'stSite') { ui.rsite = t.value; saveUI(); }
   else if (t.id === 'bkFile') {
     const f = t.files[0]; if (!f) return;
     f.text().then(txt => { try { const d = JSON.parse(txt); if (!d || !Array.isArray(d.workers) || !d.records) throw 0; if (!confirm(`백업 파일(인부 ${d.workers.length}명)로 현재 데이터를 교체합니다. 계속할까요?`)) return; S = d; ui.site = (S.sites.find(s => s.active) || S.sites[0]).id; save(); render(); toast('불러왔습니다'); } catch (er) { toast('올바른 백업 파일이 아닙니다'); } });

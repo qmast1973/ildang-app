@@ -36,6 +36,17 @@ nav.tabs{display:flex;gap:4px;flex:1}
 nav.tabs button{background:transparent;color:#cfe0f1;border:0;border-radius:8px;padding:8px 16px;font-weight:600}
 nav.tabs button.on{background:#fff;color:var(--pri)}
 nav.tabs button:hover:not(.on){background:rgba(255,255,255,.14)}
+#helpBtn{background:rgba(255,255,255,.16);color:#fff;border:0;border-radius:999px;padding:6px 12px;min-height:0;font-size:13px;font-weight:600}
+#helpBtn:hover{background:rgba(255,255,255,.28)}
+.help details{border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:#fff}
+.help summary{cursor:pointer;padding:11px 14px;font-weight:700;list-style:none}
+.help summary::-webkit-details-marker{display:none}
+.help summary::before{content:'▸ ';color:var(--pri)}
+.help details[open] summary::before{content:'▾ '}
+.help details[open] summary{border-bottom:1px solid var(--line);background:#f6f9fc;border-radius:10px 10px 0 0}
+.help .hb{padding:10px 16px 12px;font-size:14.5px}
+.help .hb p{margin:6px 0}.help .hb ul,.help .hb ol{margin:6px 0;padding-left:20px}.help .hb li{margin:3px 0}
+.help kbd{background:#eef1f5;border:1px solid var(--line);border-radius:5px;padding:0 5px;font-size:13px}
 #installBtn{background:#f4b942;color:#3b2a00;border:0;border-radius:999px;font-weight:700;padding:6px 12px;min-height:0;font-size:13px}
 #saveChip{font-size:12.5px;background:rgba(255,255,255,.16);border:0;color:#fff;border-radius:999px;padding:6px 12px;min-height:0}
 #saveChip.bad{background:#ffe3a3;color:#6b4300}
@@ -99,6 +110,7 @@ dialog::backdrop{background:rgba(10,20,30,.5)}
   input,select,textarea{font-size:16px}  /* iOS 자동 확대 방지 */
   header.top{padding:8px 12px;padding-top:calc(8px + env(safe-area-inset-top));gap:8px;justify-content:space-between}
   header.top h1{font-size:17px}
+  #helpBtn{padding:6px 10px}
   main{padding:10px 10px 24px}
   /* 하단 탭 바 */
   nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;background:#fff;border-top:1px solid var(--line);padding:6px 6px calc(6px + env(safe-area-inset-bottom));gap:2px;flex:none;order:0;width:auto}
@@ -168,6 +180,7 @@ dialog::backdrop{background:rgba(10,20,30,.5)}
     <button data-tab="report" data-ic="📊">정산</button>
     <button data-tab="settings" data-ic="⚙️">설정</button>
   </nav>
+  <button id="helpBtn" data-act="help" title="도움말">❓ 도움말</button>
   <button id="installBtn" data-act="install" hidden>📲 앱 설치</button>
   <button id="saveChip" data-act="goSave" title="저장 상태"></button>
 </header>
@@ -726,6 +739,7 @@ function viewSettings() {
   const lb = S.meta.lastBackup ? new Date(S.meta.lastBackup).toLocaleString('ko-KR') : '없음';
   const fileState = fileHandle ? (filePerm ? `<b style="color:var(--ok)">연결됨 (${esc(fileHandle.name)})</b> — 입력할 때마다 자동으로 파일에 저장됩니다.` : `<b style="color:var(--warn)">${esc(fileHandle.name)}</b> — 브라우저를 다시 연 뒤에는 권한 확인이 필요합니다. <button data-act="reauth">권한 허용하고 다시 연결</button>`) : (fsOK ? '<b style="color:var(--warn)">연결 안 됨</b> — 지금은 브라우저 안에만 저장됩니다.' : '이 브라우저(스마트폰 등)는 파일 자동저장을 지원하지 않아 <b>브라우저 저장 + 수동 백업</b>으로 사용합니다.');
   app.innerHTML = `
+  <div class="card"><h2>❓ 도움말</h2><p class="small" style="margin-top:0">사용 방법이 궁금하면 언제든 위쪽 <b>❓ 도움말</b> 버튼을 누르세요.</p><button data-act="help">사용법 보기</button></div>
   <div class="card"><h2>📤 엑셀 · PDF 저장</h2>
     <p class="muted small" style="margin-top:0">정산서와 인부 명단을 파일로 저장합니다. PDF는 인쇄창에서 "PDF로 저장"을 고르세요.</p>
     <div class="two">
@@ -784,12 +798,81 @@ function readSettings() {
 }
 
 /* ====================== 이벤트 ====================== */
+
+const HELP = [
+  ['start', '🚀 처음 시작하기', [], `
+    <ol><li><b>설정</b> 탭에서 등급별 기본 일당과 현장(공사기간)을 확인합니다. 현장이 하나뿐이면 그대로 쓰면 됩니다.</li>
+    <li><b>인부</b> 탭에서 <kbd>+ 인부 등록</kbd>으로 인부를 등록합니다. (이름·등급·일당·세금 구분)</li>
+    <li><b>공수 입력</b> 탭에서 날짜를 고르고 공수를 입력합니다.</li>
+    <li><b>정산</b> 탭에서 기간을 정해 인건비를 확인하고 엑셀·PDF로 저장합니다.</li></ol>
+    <p class="muted">모든 입력은 <b>즉시 자동 저장</b>됩니다. 저장 버튼을 누를 필요가 없습니다.</p>`],
+  ['entry', '📝 공수 입력하기', ['entry'], `
+    <ul><li>위쪽 <kbd>◀</kbd> <kbd>▶</kbd>로 날짜를 옮기고, <kbd>오늘</kbd>로 돌아옵니다. 날짜 칸을 눌러 직접 고를 수도 있습니다.</li>
+    <li><b>개별 입력</b>: 인부 줄의 <kbd>−</kbd> <kbd>+</kbd>는 0.5씩, 가운데 칸을 누르면 0.5~4.0, 휴무를 고를 수 있습니다.</li>
+    <li><b>일괄 입력</b>: 인부를 체크(또는 <kbd>전체선택</kbd>) → 공수를 고르고 <kbd>선택 인원에 일괄 입력</kbd>. 잘못 넣었으면 <kbd>선택 삭제</kbd>.</li>
+    <li><b>전날 복사</b>: 가장 최근 기록을 오늘로 복사합니다. 이미 입력한 인부는 건드리지 않습니다.</li>
+    <li><b>기간 일괄 입력</b>: 여러 날을 한 번에 넣습니다. 제외할 요일(기본: 일요일)을 정할 수 있습니다.</li>
+    <li>아래 파란 바에 그날의 인원·공수·일당 합계가 나옵니다.</li>
+    <li>"-"는 <b>입력 안 함</b>, "휴무"는 <b>쉬는 날로 기록</b>한 것입니다. 휴무는 일당 0원이고 근무일에 포함되지 않습니다.</li></ul>`],
+  ['workers', '👷 인부 등록 · 단가 · 세금', ['workers'], `
+    <ul><li><b>일당</b>은 인부마다 따로 정합니다. 등급을 고르면 설정의 기본 일당이 먼저 채워지고 직접 고칠 수 있습니다.</li>
+    <li>일당을 바꾸면 <b>이미 입력한 기록의 단가도 바꿀지</b> 물어봅니다. [취소]하면 과거 기록은 그대로, 오늘부터 새 단가가 적용됩니다.</li>
+    <li><b>세금 구분</b>
+      <ul><li>3.3% 원천징수: 총액의 3.3%를 공제하고 지급</li>
+      <li>사업자(세금계산서): 원천징수 없음, 부가세 10%를 더해 표시</li>
+      <li>공제 없음 / 직접 세율: 원하는 %를 입력</li></ul></li>
+    <li>주민번호·계좌 등 개인정보는 이 기기에만 저장되고, 목록에서는 뒷자리를 가려 보여줍니다.</li>
+    <li>그만둔 인부는 삭제 대신 상태를 <b>퇴사</b>로 바꾸세요. 과거 기록이 유지되고 입력 목록에서는 숨겨집니다. (근무 기록이 있는 인부는 삭제할 수 없습니다.)</li></ul>`],
+  ['report', '📊 정산 · 엑셀 · PDF · 공유', ['report'], `
+    <ul><li>기간과 현장을 고르면 인부별 근무일·총공수·총액·원천징수·실지급액이 계산됩니다. <kbd>이번 달</kbd> <kbd>지난 달</kbd> <kbd>전체 기간</kbd> 버튼을 쓰면 편합니다.</li>
+    <li>아래에 월별 <b>공수표</b>(인부×날짜)가 나옵니다. 휴무는 "휴"로 표시됩니다.</li>
+    <li><b>엑셀 저장</b>: 정산요약 + 월별 공수표 시트가 들어간 .xlsx 파일</li>
+    <li><b>PDF 저장·인쇄</b>: 인쇄창이 열리면 대상(프린터)을 <b>PDF로 저장</b>으로 고르세요.</li>
+    <li><b>공유</b>: 스마트폰에서는 카카오톡 등으로 파일을 바로 보낼 수 있습니다. 지원하지 않는 기기에서는 파일을 저장합니다.</li>
+    <li>기본 설정은 주민번호·계좌를 <b>빼고</b> 저장합니다. 필요할 때만 "개인정보 전체 포함"을 체크하세요.</li>
+    <li>설정 탭에서도 정산서와 <b>인부 명단</b>을 엑셀·PDF로 저장할 수 있습니다.</li></ul>
+    <p class="muted">※ 세금은 기간 합계 기준 자동 계산입니다. 신고용 확정 금액은 세무사 확인을 권장합니다.</p>`],
+  ['sites', '🏗 현장 · 공사기간', ['settings'], `
+    <ul><li>설정 탭에서 현장을 추가하고 시작일·종료일을 정합니다. 현장이 여러 개면 공수 입력 화면에서 현장을 골라 입력합니다.</li>
+    <li>공사기간 밖의 날짜에 입력하면 <b>경고</b>가 뜹니다. (입력은 가능)</li>
+    <li>같은 날 한 사람을 두 현장에 나눠 넣으면 "다른 현장 N공수"로 표시됩니다.</li>
+    <li>끝난 현장은 삭제하지 말고 <b>진행 체크를 해제</b>하세요. 기록이 유지됩니다.</li></ul>`],
+  ['save', '💾 저장 · 백업', [], `
+    <ul><li>입력하면 이 기기의 브라우저에 <b>바로 자동 저장</b>됩니다.</li>
+    <li>노트북(크롬·엣지)은 설정 탭의 <kbd>저장 파일 만들기</kbd>로 파일을 하나 만들어 두면, 입력할 때마다 <b>그 파일에도 자동 저장</b>됩니다. OneDrive·구글 드라이브 폴더에 만들면 PC가 고장 나도 안전합니다.</li>
+    <li>브라우저를 껐다 켠 뒤 위쪽 노란 버튼이 보이면 눌러서 파일 쓰기 권한을 다시 허용하세요.</li>
+    <li><b>백업 파일 내려받기 / 불러오기</b>로 데이터를 다른 기기로 옮길 수 있습니다.</li>
+    <li>⚠ 브라우저의 "사이트 데이터 삭제"를 하면 브라우저 저장분이 지워집니다. 저장 파일이나 백업 파일을 꼭 만들어 두세요.</li></ul>`],
+  ['phone', '📱 스마트폰 · 앱 설치', [], `
+    <ul><li>같은 웹 주소로 접속하면 화면이 스마트폰에 맞게 자동으로 바뀝니다.</li>
+    <li><b>안드로이드(크롬)</b>: 메뉴(⋮) → 앱 설치 / 홈 화면에 추가</li>
+    <li><b>아이폰(사파리)</b>: 공유 버튼 → 홈 화면에 추가</li>
+    <li><b>노트북(크롬·엣지)</b>: 주소창 오른쪽 설치 아이콘 또는 위쪽 <kbd>📲 앱 설치</kbd></li>
+    <li>설치하면 인터넷이 없어도 열립니다.</li>
+    <li>⚠ 노트북과 스마트폰의 데이터는 <b>따로 저장</b>됩니다. 자동으로 합쳐지지 않으니 백업 파일로 옮기세요.</li></ul>`],
+  ['faq', '❓ 자주 묻는 질문', ['settings'], `
+    <p><b>Q. 데이터가 사라졌어요.</b><br>다른 주소나 다른 브라우저로 열면 데이터가 따로 보입니다. 처음 쓰던 주소·브라우저로 열어보고, 백업 파일이 있으면 설정에서 불러오세요.</p>
+    <p><b>Q. 공수를 잘못 넣었어요.</b><br>같은 칸에서 다시 고르면 바뀝니다. "-"를 고르면 입력이 지워집니다.</p>
+    <p><b>Q. 단가가 0원으로 나와요.</b><br>인부 정보에서 일당을 입력하세요. "단가 미설정" 표시가 붙은 인부는 일당이 0원으로 계산됩니다.</p>
+    <p><b>Q. 4.0공수보다 많이 넣고 싶어요.</b><br>한 칸에는 최대 4.0까지입니다. 현장을 나누어 입력하거나 요청해 주세요.</p>
+    <p><b>Q. 로그인이 없는데 안전한가요?</b><br>데이터는 서버로 전송되지 않고 이 기기에만 저장됩니다. 대신 기기를 잠가 두고, 개인정보가 든 엑셀·PDF·백업 파일 공유에 주의하세요.</p>`]
+];
+function helpDlg(open) {
+  const hit = HELP.find(h => h[2].includes(ui.tab));
+  const first = open || (hit ? hit[0] : 'start');
+  openDlg(`<div class="dh">❓ 도움말</div><div class="db help">
+    <p class="muted small" style="margin-top:0">항목을 눌러 펼치세요. 지금 화면과 관련된 항목이 먼저 열려 있습니다.</p>
+    ${HELP.map(h => `<details ${h[0] === first ? 'open' : ''}><summary>${h[1]}</summary><div class="hb">${h[3]}</div></details>`).join('')}
+  </div><div class="df"><button class="pri" onclick="closeDlg()">닫기</button></div>`);
+}
+
 let deferredInstall = null;
 const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; if (!isStandalone()) $('#installBtn').hidden = false; });
 window.addEventListener('appinstalled', () => { deferredInstall = null; $('#installBtn').hidden = true; toast('앱이 설치되었습니다'); });
 const A = {
+  help() { helpDlg(); },
   async install() { if (deferredInstall) { deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; $('#installBtn').hidden = true; } else { ui.tab = 'settings'; render(); } },
   goSave() { ui.tab = 'settings'; render(); },
   dprev() { setDate(addDays(ui.date, -1)); }, dnext() { setDate(addDays(ui.date, 1)); }, dtoday() { setDate(today()); },
@@ -847,7 +930,7 @@ function welcome() {
     <p>이 앱은 로그인 없이 <b>이 기기 안에만</b> 데이터를 저장합니다. 입력하면 바로 자동 저장됩니다.</p>
     ${fsOK ? `<p>노트북에서는 <b>저장 파일</b>을 하나 만들어 두면, 입력할 때마다 그 파일에도 자동 저장되어 브라우저 데이터를 지워도 안전합니다. (OneDrive·구글 드라이브 폴더에 만들면 더 좋습니다)</p>` : `<p>이 브라우저는 파일 자동저장을 지원하지 않습니다. <b>[설정] → 백업 파일 내려받기</b>를 주기적으로 해주세요.</p>`}
     <p class="muted small">시작 순서: ① 설정에서 등급 기본 일당·현장 확인 → ② 인부 등록 → ③ 공수 입력</p></div>
-    <div class="df"><button onclick="closeDlg()">나중에</button>${fsOK ? '<button class="pri" id="wlcFile">저장 파일 만들기</button>' : ''}</div>`);
+    <div class="df"><button onclick="closeDlg();helpDlg('start')">사용법 보기</button><button onclick="closeDlg()">나중에</button>${fsOK ? '<button class="pri" id="wlcFile">저장 파일 만들기</button>' : ''}</div>`);
   const b = $('#wlcFile'); if (b) b.onclick = async () => { closeDlg(); await createFile(); };
   S.meta.setupDone = true; save();
 }

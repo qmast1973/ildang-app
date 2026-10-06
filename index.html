@@ -61,7 +61,14 @@ main{max-width:1180px;margin:0 auto;padding:14px 16px 90px}
 .datenav input{width:150px}
 .dlabel{font-weight:700;font-size:17px}
 /* entry rows */
-.row{display:grid;grid-template-columns:28px 1fr auto 110px;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-bottom:6px}
+.row{display:grid;grid-template-columns:28px 1fr auto auto 110px;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-bottom:6px}
+.row.notm{grid-template-columns:28px 1fr auto 110px}
+.tm{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--mute)}
+.tm label{display:flex;gap:4px;align-items:center;white-space:nowrap}
+.tm input{min-height:34px;padding:3px 6px;width:128px}
+.toolToggle{display:none;width:100%;margin-bottom:8px;font-weight:700}
+.hrs{min-width:58px;font-weight:700;color:var(--ink)}
+details.card>summary{cursor:pointer}
 .row.on{background:var(--on);border-color:#b6dcc4}
 .row.off{background:#eef0f3;border-color:#d3d8df;color:#6a7686}
 .row.off .nm b{text-decoration:line-through}
@@ -127,7 +134,14 @@ dialog::backdrop{background:rgba(10,20,30,.5)}
   .bar>label:has(#dSite){flex:1 1 100%;display:flex;gap:8px;align-items:center;order:4}
   .bar>label:has(#dSite) select{flex:1}
   .bar>span[style*='flex:1']{display:none}
-  .row{grid-template-columns:28px 1fr 104px;grid-template-areas:"c n a" "c t t";padding:10px}
+  .row{grid-template-columns:28px 1fr 104px;grid-template-areas:"c n a" "c t t" "c m m";padding:10px}
+  .row.notm{grid-template-columns:28px 1fr 104px;grid-template-areas:"c n a" "c t t"}
+  .row .tm{grid-area:m;flex-wrap:wrap}
+  .tm input{min-height:42px;width:128px}
+  .toolToggle{display:block}
+  .card.tools.collapsed .toolbody{display:none}
+  .card.tools.collapsed .toolToggle{margin-bottom:0}
+  .tbulk label{flex:1 1 42%}
   .row>:nth-child(1){grid-area:c}.row>:nth-child(2){grid-area:n}
   .row .ctl{grid-area:t;justify-content:flex-start}
   .row .amt{grid-area:a}
@@ -214,8 +228,10 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 
 /* ====================== 데이터 ====================== */
 const LS_KEY = 'ildang_v1', UI_KEY = 'ildang_ui_v1';
-let S, ui = { tab: 'entry', date: today(), site: '', sel: [], from: '', to: '', rsite: '', pii: false };
+let S, ui = { tools: false, tab: 'entry', date: today(), site: '', sel: [], from: '', to: '', rsite: '', pii: false };
 
+const SET_DEF = { times: true, auto: true, std: 8, brk: 60, defIn: '07:00', defOut: '17:00' };
+function fixS() { S.settings = Object.assign({}, SET_DEF, S.settings || {}); }
 function defaultState() {
   const sid = uid();
   return {
@@ -225,35 +241,57 @@ function defaultState() {
     grades: ['조공0', '조공1', '준계장0', '준계장1', '계장0', '계장1'].map(n => ({ name: n, rate: 0 })),
     sites: [{ id: sid, name: '기본 현장', start: '', end: '', active: true }],
     workers: [],
-    records: {}
+    records: {},
+    settings: { ...SET_DEF }
   };
 }
 function load() {
   try { const j = localStorage.getItem(LS_KEY); if (j) S = JSON.parse(j); } catch (e) {}
   if (!S) S = defaultState();
+  fixS();
   try { Object.assign(ui, JSON.parse(localStorage.getItem(UI_KEY) || '{}')); } catch (e) {}
   ui.sel = [];
   if (!S.sites.find(s => s.id === ui.site)) ui.site = (S.sites.find(s => s.active) || S.sites[0]).id;
   if (!ui.date) ui.date = today();
 }
 function save() {
-  S.meta.updatedAt = Date.now();
+  fixS(); S.meta.updatedAt = Date.now();
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { toast('⚠ 브라우저 저장 실패 (저장공간 부족?)'); }
   scheduleFile(); scheduleMirror(); updateChip();
 }
-function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, date: ui.date, site: ui.site, from: ui.from, to: ui.to, rsite: ui.rsite, pii: ui.pii })); } catch (e) {} }
+function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, date: ui.date, site: ui.site, from: ui.from, to: ui.to, rsite: ui.rsite, pii: ui.pii, tools: ui.tools })); } catch (e) {} }
 
 const rk = (d, w, s) => `${d}|${w}|${s}`;
 const W = id => S.workers.find(w => w.id === id);
 const SITE = id => S.sites.find(s => s.id === id);
 const gradeIdx = n => { const i = S.grades.findIndex(g => g.name === n); return i < 0 ? 99 : i; };
 const gradeRate = n => (S.grades.find(g => g.name === n) || {}).rate || 0;
+const mins = t => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
+function netHours(a, b) {  // 근무시간(시간) = 퇴근-출근 (자정 넘김 지원) - 휴게(4시간 초과 시)
+  if (!a || !b) return 0;
+  let d = mins(b) - mins(a); if (d === 0) return 0; if (d < 0) d += 1440;
+  let h = d / 60; if (h > 4) h -= (S.settings.brk || 0) / 60;
+  return Math.max(0, h);
+}
+function autoUnits(a, b) {
+  const h = netHours(a, b); if (h <= 0) return 0;
+  return Math.min(4, Math.max(0.5, Math.round(h / (S.settings.std || 8) * 2) / 2));
+}
 function setUnits(d, wid, sid, u) {
-  const k = rk(d, wid, sid);
-  if (!u) { delete S.records[k]; return; }
-  const prev = S.records[k];
-  if (u === 'off') { S.records[k] = { u: 0, off: 1, r: prev ? prev.r : (W(wid).rate || 0) }; return; }
-  S.records[k] = { u, r: prev ? prev.r : (W(wid).rate || 0) };
+  const k = rk(d, wid, sid), prev = S.records[k], r = prev ? prev.r : (W(wid).rate || 0);
+  if (u === 'off') { S.records[k] = { u: 0, off: 1, r }; return; }          // 휴무: 시간 기록은 지움
+  if (!u) { if (prev && (prev.in || prev.out)) S.records[k] = { u: 0, r, in: prev.in, out: prev.out }; else delete S.records[k]; return; }
+  const rec = { u, r }; if (prev && !prev.off) { if (prev.in) rec.in = prev.in; if (prev.out) rec.out = prev.out; }
+  S.records[k] = rec;
+}
+function setTimes(d, wid, sid, tin, tout) {
+  const k = rk(d, wid, sid); let rec = S.records[k];
+  if (!tin && !tout) { if (rec) { delete rec.in; delete rec.out; if (!rec.u && !rec.off) delete S.records[k]; } return; }
+  if (!rec) rec = S.records[k] = { u: 0, r: W(wid).rate || 0 };
+  delete rec.off;
+  if (tin) rec.in = tin; else delete rec.in;
+  if (tout) rec.out = tout; else delete rec.out;
+  if (S.settings.auto && rec.in && rec.out) rec.u = autoUnits(rec.in, rec.out);
 }
 function sortWorkers(a, b) { return gradeIdx(a.grade) - gradeIdx(b.grade) || a.name.localeCompare(b.name, 'ko'); }
 function taxOf(w, gross) {
@@ -398,7 +436,9 @@ function viewEntry() {
     <label>현장 <select id="dSite">${act.map(s => `<option value="${s.id}" ${s.id === ui.site ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
   </div>
   <div id="dWarn"></div>
-  <div class="card" style="padding:10px 12px">
+  <div class="card tools ${ui.tools ? '' : 'collapsed'}" style="padding:10px 12px">
+    <button class="toolToggle" data-act="toggleTools">🛠 일괄 입력 · 검색 도구 ${ui.tools ? '▴ 접기' : '▾ 펼치기'}</button>
+    <div class="toolbody">
     <div class="bar bulk-wrap" style="margin:0 0 8px">
       <label><input type="checkbox" id="chkAll"> 전체선택</label>
       <select id="bulkU" title="일괄 입력할 공수">${unitOpts(1, false, true)}</select>
@@ -407,10 +447,15 @@ function viewEntry() {
       <button data-act="copyPrev">전날 복사</button>
       <button data-act="rangeModal">기간 일괄 입력</button>
     </div>
+    ${S.settings.times ? `<div class="bar bulk-wrap tbulk" style="margin:0 0 8px"><b class="small">⏱ 시간 일괄</b>
+      <label class="small">출근 <input type="time" id="bIn" value="${S.settings.defIn}"></label>
+      <label class="small">퇴근 <input type="time" id="bOut" value="${S.settings.defOut}"></label>
+      <button data-act="bulkTime">선택 인원에 시간 입력${S.settings.auto ? ' (공수 자동)' : ''}</button></div>` : ''}
     <div class="bar" style="margin:0">
       <select id="dGrade"><option value="">전체 등급</option>${S.grades.map(g => `<option>${esc(g.name)}</option>`).join('')}</select>
       <input id="dSearch" placeholder="이름·연락처 검색" style="width:170px">
       <label><input type="checkbox" id="dOnly"> 입력된 인원만</label>
+    </div>
     </div>
   </div>
   <div id="dList"></div>
@@ -429,11 +474,13 @@ function entryWorkers() {
 function rowHTML(w) {
   const d = ui.date, s = ui.site, rec = S.records[rk(d, w.id, s)], u = rec ? rec.u : 0, isOff = !!(rec && rec.off), rate = rec ? rec.r : (w.rate || 0);
   let other = 0; S.sites.forEach(x => { if (x.id !== s) { const r = S.records[rk(d, w.id, x.id)]; if (r) other += r.u; } });
-  return `<div class="row ${u ? 'on' : isOff ? 'off' : ''}" data-w="${w.id}">
+  const hrs = rec ? netHours(rec.in, rec.out) : 0, T = S.settings.times;
+  return `<div class="row ${u ? 'on' : isOff ? 'off' : ''} ${T ? '' : 'notm'}" data-w="${w.id}">
     <input type="checkbox" class="sel" ${ui.sel.includes(w.id) ? 'checked' : ''}>
     <div class="nm"><b>${esc(w.name)}</b>${other ? `<span class="tag">다른 현장 ${fu(other)}공수</span>` : ''}${!w.rate ? '<span class="tag">단가 미설정</span>' : ''}
       <small>${esc(w.grade)} · ${won(rate)}원</small></div>
     <div class="ctl"><button data-act="dec" aria-label="0.5 감소">−</button><select class="usel">${unitOpts(isOff ? 'off' : u, true, true)}</select><button data-act="inc" aria-label="0.5 증가">+</button></div>
+    ${T ? `<div class="tm"><label>출근 <input type="time" class="tin" value="${rec && rec.in || ''}"></label><label>퇴근 <input type="time" class="tout" value="${rec && rec.out || ''}"></label><span class="hrs">${hrs ? fu(hrs) + '시간' : ''}</span></div>` : ''}
     <div class="amt">${u ? won(u * rate) + '원' : isOff ? '휴무' : ''}</div></div>`;
 }
 function renderEntry() {
@@ -449,15 +496,25 @@ function renderEntry() {
   renderSum();
 }
 function renderSum() {
-  const d = ui.date, s = ui.site; let n = 0, u = 0, amt = 0, nAll = 0, uAll = 0, aAll = 0, nOff = 0;
+  const d = ui.date, s = ui.site; let n = 0, u = 0, amt = 0, nAll = 0, uAll = 0, aAll = 0, nOff = 0, hrsT = 0;
   for (const [k, v] of Object.entries(S.records)) {
     if (!k.startsWith(d + '|')) continue;
     if (v.off) { if (k.endsWith('|' + s)) nOff++; continue; }
+    if (!v.u) continue;
     uAll += v.u; aAll += v.u * v.r; nAll++;
-    if (k.endsWith('|' + s)) { n++; u += v.u; amt += v.u * v.r; }
+    if (k.endsWith('|' + s)) { n++; u += v.u; amt += v.u * v.r; hrsT += netHours(v.in, v.out); }
   }
-  $('#dSum').innerHTML = `<span>이 현장: <b>${n}</b>명 · <b>${fu(u)}</b>공수${nOff ? ` · 휴무 <b>${nOff}</b>명` : ''}</span><span>일당 합계 <b>${won(amt)}원</b></span>` +
+  $('#dSum').innerHTML = `<span>이 현장: <b>${n}</b>명 · <b>${fu(u)}</b>공수${nOff ? ` · 휴무 <b>${nOff}</b>명` : ''}${hrsT ? ` · 근무시간 <b>${fu(hrsT)}</b>시간` : ''}</span><span>일당 합계 <b>${won(amt)}원</b></span>` +
     (S.sites.length > 1 ? `<span class="small" style="align-self:center">당일 전체 현장: ${nAll}명 · ${fu(uAll)}공수 · ${won(aAll)}원</span>` : '');
+}
+function softRow(wid) {  // 시간 입력 중 포커스가 끊기지 않도록 행을 다시 그리지 않고 값만 갱신
+  const el = $(`.row[data-w="${wid}"]`); if (!el) return;
+  const w = W(wid), rec = S.records[rk(ui.date, wid, ui.site)], u = rec ? rec.u : 0, isOff = !!(rec && rec.off), rate = rec ? rec.r : (w.rate || 0), h = rec ? netHours(rec.in, rec.out) : 0;
+  el.classList.toggle('on', !!u); el.classList.toggle('off', !u && isOff);
+  $('.usel', el).value = isOff ? 'off' : String(u);
+  $('.amt', el).textContent = u ? won(u * rate) + '원' : isOff ? '휴무' : '';
+  $('.hrs', el).textContent = h ? fu(h) + '시간' : '';
+  renderSum();
 }
 function updateRow(wid) {
   const el = $(`.row[data-w="${wid}"]`); if (!el) return;
@@ -476,9 +533,15 @@ function bulkApply() {
   ids.forEach(id => { setUnits(ui.date, id, ui.site, u); if (!W(id).rate) noRate++; });
   save(); renderEntry(); toast(`${ids.length}명 ` + (u === 'off' ? '휴무 처리' : `${fu(u)}공수 입력`) + (noRate && u !== 'off' ? ` (단가 미설정 ${noRate}명)` : ''));
 }
+function bulkTime() {
+  const ids = selectedOrAll(); if (!ids.length) return toast('시간을 넣을 인부를 먼저 체크하세요 (전체선택 가능)');
+  const a = $('#bIn').value, b = $('#bOut').value; if (!a || !b) return toast('출근·퇴근 시간을 모두 입력하세요');
+  ids.forEach(id => setTimes(ui.date, id, ui.site, a, b)); save(); renderEntry();
+  toast(`${ids.length}명 ${a}~${b} (${fu(netHours(a, b))}시간)` + (S.settings.auto ? ` · ${fu(autoUnits(a, b))}공수 자동 입력` : ''));
+}
 function bulkClear() {
   const ids = selectedOrAll(); if (!ids.length) return toast('삭제할 인부를 체크하세요');
-  ids.forEach(id => setUnits(ui.date, id, ui.site, 0)); save(); renderEntry(); toast(`${ids.length}명 입력 삭제`);
+  ids.forEach(id => { delete S.records[rk(ui.date, id, ui.site)]; }); save(); renderEntry(); toast(`${ids.length}명 입력 삭제`);
 }
 function copyPrev() {
   let d = addDays(ui.date, -1), found = null;
@@ -487,7 +550,7 @@ function copyPrev() {
   const src = Object.entries(S.records).filter(([k]) => k.startsWith(found + '|') && k.endsWith('|' + ui.site));
   if (!confirm(`${dlabel(found)} 기록 ${src.length}건을 오늘 날짜로 복사할까요?\n(이미 입력된 인부는 건드리지 않습니다)`)) return;
   let c = 0;
-  src.forEach(([k, v]) => { const wid = k.split('|')[1]; if (!W(wid) || S.records[rk(ui.date, wid, ui.site)]) return; setUnits(ui.date, wid, ui.site, v.off ? 'off' : v.u); c++; });
+  src.forEach(([k, v]) => { const wid = k.split('|')[1]; if (!W(wid) || S.records[rk(ui.date, wid, ui.site)]) return; S.records[rk(ui.date, wid, ui.site)] = { u: v.u, r: W(wid).rate || 0, ...(v.off ? { off: 1 } : {}), ...(v.in ? { in: v.in } : {}), ...(v.out ? { out: v.out } : {}) }; c++; });
   save(); renderEntry(); toast(`${c}건 복사됨`);
 }
 function rangeModal() {
@@ -499,7 +562,8 @@ function rangeModal() {
       <label>시작일<input type="date" id="rFrom" value="${ui.date}"></label>
       <label>종료일<input type="date" id="rTo" value="${ui.date}"></label>
       <label>공수<select id="rU">${unitOpts(1, false, true)}</select></label>
-      <label>&nbsp;<span style="color:var(--ink)"><input type="checkbox" id="rOver"> 이미 입력된 날도 덮어쓰기</span></label>
+      ${S.settings.times ? `<label>출근 (선택)<input type="time" id="rIn"></label><label>퇴근 (선택)<input type="time" id="rOut"></label>` : ''}
+      <label class="w2"><span style="color:var(--ink)"><input type="checkbox" id="rOver"> 이미 입력된 날도 덮어쓰기</span></label>
       <label class="w2">제외할 요일<span class="chips" style="color:var(--ink)">${DOW.map((n, i) => `<label style="flex-direction:row;gap:4px;font-size:14px"><input type="checkbox" class="rDow" value="${i}" ${i === 0 ? 'checked' : ''}>${n}</label>`).join('')}</span></label>
     </div></div>
     <div class="df"><button onclick="closeDlg()">취소</button><button class="pri" data-act="rangeApply">입력</button></div>`);
@@ -513,7 +577,8 @@ function rangeApply() {
   if (days.length > 366) return toast('기간이 너무 깁니다 (최대 1년)');
   if (!confirm(`${ids.length}명 × ${days.length}일 = ${ids.length * days.length}건을 ${u === 'off' ? '휴무' : fu(u) + '공수'}로 입력합니다. 계속할까요?`)) return;
   let c = 0;
-  days.forEach(d => ids.forEach(id => { if (!over && S.records[rk(d, id, ui.site)]) return; setUnits(d, id, ui.site, u); c++; }));
+  const ti = ($('#rIn') || {}).value || '', to = ($('#rOut') || {}).value || '';
+  days.forEach(d => ids.forEach(id => { if (!over && S.records[rk(d, id, ui.site)]) return; setUnits(d, id, ui.site, u); if (u !== 'off' && (ti || to)) { const rec = S.records[rk(d, id, ui.site)]; if (ti) rec.in = ti; if (to) rec.out = to; } c++; }));
   save(); closeDlg(); renderEntry(); toast(`${c}건 입력됨`);
 }
 
@@ -589,12 +654,14 @@ function delWorker() {
 /* ====================== 정산 ====================== */
 function monthStart() { const d = new Date(); return iso(new Date(d.getFullYear(), d.getMonth(), 1)); }
 function buildReport(from, to, site) {
-  const rows = new Map(), bySite = new Map(), offBy = {}; let minD = '9999', maxD = '0000';
+  const rows = new Map(), bySite = new Map(), offBy = {}, logs = []; let minD = '9999', maxD = '0000';
   for (const [k, v] of Object.entries(S.records)) {
     const [d, wid, sid] = k.split('|');
     if (d < from || d > to || (site && sid !== site)) continue;
     const w = W(wid); if (!w) continue;
+    if (v.in || v.out) logs.push({ d, w, site: (SITE(sid) || {}).name || '', tin: v.in || '', tout: v.out || '', h: netHours(v.in, v.out), u: v.u || 0 });
     if (v.off) { (offBy[wid] = offBy[wid] || {})[d] = 1; continue; }
+    if (!v.u) continue;
     let r = rows.get(wid); if (!r) rows.set(wid, r = { w, units: 0, gross: 0, byDate: {} });
     r.units += v.u; r.gross += Math.round(v.u * v.r); r.byDate[d] = (r.byDate[d] || 0) + v.u;
     let s = bySite.get(sid); if (!s) bySite.set(sid, s = { name: (SITE(sid) || {}).name || '?', units: 0, gross: 0 });
@@ -607,7 +674,8 @@ function buildReport(from, to, site) {
   list.forEach(r => { r.days = Object.keys(r.byDate).length; const t = taxOf(r.w, r.gross); r.wh = t.wh; r.vat = t.vat; r.net = r.gross - t.wh + t.vat; for (const k in tot) tot[k] += r[k]; });
   const months = [];
   if (list.length) { let m = minD.slice(0, 7); while (m <= maxD.slice(0, 7)) { months.push(m); const [y, mm] = m.split('-').map(Number); m = mm === 12 ? `${y + 1}-01` : `${y}-${pad(mm + 1)}`; } }
-  return { from, to, site, siteName: site ? (SITE(site) || {}).name : '전체 현장', rows: list, tot, bySite: [...bySite.values()], months, minD, maxD };
+  logs.sort((a, b) => a.d.localeCompare(b.d) || a.w.name.localeCompare(b.w.name, 'ko'));
+  return { from, to, site, siteName: site ? (SITE(site) || {}).name : '전체 현장', logs, rows: list, tot, bySite: [...bySite.values()], months, minD, maxD };
 }
 function monthDates(m, from, to) {
   const [y, mm] = m.split('-').map(Number), n = new Date(y, mm, 0).getDate(), out = [];
@@ -634,6 +702,13 @@ function matrixHTML(R, m, cls) {
   return `<table class="${cls} mx"><thead><tr><th class="nm">이름</th>${dates.map(d => `<th class="${cls2(d)}">${+d.slice(8)}<br><small>${DOW[parseD(d).getDay()]}</small></th>`).join('')}<th>합계</th></tr></thead><tbody>` +
     rows.map(r => { let s = 0; return `<tr><td class="nm">${esc(r.w.name)}</td>${dates.map(d => { const v = r.byDate[d]; s += v || 0; return `<td class="${cls2(d)} ${v ? 'v' : ''}">${v ? fu(v) : (r.off[d] ? '<span class="muted">휴</span>' : '')}</td>`; }).join('')}<td><b>${fu(s)}</b></td></tr>`; }).join('') +
     `<tr class="tot"><td class="nm">일 합계</td>${dates.map(d => { const s = rows.reduce((a, r) => a + (r.byDate[d] || 0), 0); return `<td class="${cls2(d)}">${s ? fu(s) : ''}</td>`; }).join('')}<td>${fu(rows.reduce((a, r) => a + dates.reduce((b, d) => b + (r.byDate[d] || 0), 0), 0))}</td></tr></tbody></table>`;
+}
+const dshort = d => `${d.slice(5)}(${DOW[parseD(d).getDay()]})`;
+function logsHTML(R, cls) {
+  const tot = R.logs.reduce((a, l) => a + l.h, 0);
+  return `<table class="${cls}"><thead><tr><th>날짜</th><th>이름</th><th>현장</th><th>출근</th><th>퇴근</th><th class="n">근무시간</th><th class="n">공수</th></tr></thead><tbody>` +
+    R.logs.map(l => `<tr><td>${dshort(l.d)}</td><td>${esc(l.w.name)}</td><td>${esc(l.site)}</td><td>${l.tin || ''}</td><td>${l.tout || ''}</td><td class="n">${l.h ? fu(l.h) : ''}</td><td class="n">${l.u ? fu(l.u) : ''}</td></tr>`).join('') +
+    `<tr class="tot"><td colspan="5">합계 (${R.logs.length}건)</td><td class="n">${fu(tot)}</td><td class="n">${fu(R.logs.reduce((a, l) => a + l.u, 0))}</td></tr></tbody></table>`;
 }
 function viewReport() {
   if (!ui.from) { ui.from = monthStart(); ui.to = today(); }
@@ -667,6 +742,7 @@ function renderReport() {
   <div class="card scroll"><h2>인부별 정산 <span class="muted small">(${ui.from} ~ ${ui.to} · ${esc(R.siteName)})</span></h2>${summaryHTML(R, false, 'tbl')}
   <p class="muted small" style="margin-bottom:0">※ 원천징수·부가세는 기간 합계 기준 자동계산입니다. 신고용 확정 금액은 세무사 확인을 권장합니다.</p></div>
   ${R.bySite.length > 1 ? `<div class="card scroll"><h2>현장별 합계</h2><table class="tbl"><thead><tr><th>현장</th><th class="n">총공수</th><th class="n">인건비(세전)</th></tr></thead><tbody>${R.bySite.map(s => `<tr><td>${esc(s.name)}</td><td class="n">${fu(s.units)}</td><td class="n">${won(s.gross)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+  ${R.logs.length ? `<details class="card"><summary><b>⏱ 출퇴근 기록 (${R.logs.length}건)</b> <span class="muted small">눌러서 펼치기 · 엑셀·PDF에도 포함됩니다</span></summary><div class="scroll" style="margin-top:10px">${logsHTML(R, 'tbl')}</div></details>` : ''}
   ${R.months.map(m => { const h = matrixHTML(R, m, 'tbl'); return h ? `<div class="card scroll"><h2>${m.replace('-', '년 ')}월 공수표</h2>${h}</div>` : ''; }).join('')}`;
 }
 
@@ -717,6 +793,12 @@ function buildXlsx(R, pii) {
   rows.push(t.foot.map((v, c) => v === '' ? '' : c === 5 ? { v, s: 6 } : numCols.has(c) && c !== 4 ? { v, s: 4 } : c === 4 ? { v, s: 4 } : { v, s: 4 }));
   sheets.push({ name: '정산요약', rows, cols: [5, 12, 9, 20, 8, 9, 14, 12, 12, 14, 15, 16, 10, 20, 16] });
   if (R.bySite.length > 1) sheets.push({ name: '현장별', rows: [[{ v: '현장', s: 1 }, { v: '총공수', s: 1 }, { v: '인건비(세전)', s: 1 }], ...R.bySite.map(s => [s.name, { v: s.units, s: 3 }, { v: s.gross, s: 2 }])], cols: [24, 10, 16] });
+  if (R.logs.length) {
+    const lr = [[{ v: '날짜', s: 1 }, { v: '이름', s: 1 }, { v: '현장', s: 1 }, { v: '출근', s: 1 }, { v: '퇴근', s: 1 }, { v: '근무시간', s: 1 }, { v: '공수', s: 1 }]];
+    R.logs.forEach(l => lr.push([l.d + ' (' + DOW[parseD(l.d).getDay()] + ')', l.w.name, l.site, l.tin, l.tout, l.h ? { v: Math.round(l.h * 100) / 100, s: 3 } : '', l.u ? { v: l.u, s: 3 } : '']));
+    lr.push([{ v: '합계', s: 4 }, '', '', '', '', { v: Math.round(R.logs.reduce((a, l) => a + l.h, 0) * 100) / 100, s: 6 }, { v: R.logs.reduce((a, l) => a + l.u, 0), s: 6 }]);
+    sheets.push({ name: '출퇴근기록', rows: lr, cols: [16, 12, 16, 8, 8, 10, 8] });
+  }
   R.months.forEach(m => {
     const dates = monthDates(m, R.from, R.to), rs = R.rows.filter(r => dates.some(d => r.byDate[d])); if (!rs.length) return;
     const rws = [[{ v: '이름', s: 1 }, { v: '등급', s: 1 }, ...dates.map(d => ({ v: `${+d.slice(8)}(${DOW[parseD(d).getDay()]})`, s: 1 })), { v: '합계', s: 1 }]];
@@ -747,6 +829,7 @@ function exPdf() {
   let h = head + summaryHTML(R, ui.pii, '');
   if (R.bySite.length > 1) h += `<table style="width:auto"><thead><tr><th>현장</th><th class="n">총공수</th><th class="n">인건비(세전)</th></tr></thead><tbody>${R.bySite.map(s => `<tr><td>${esc(s.name)}</td><td class="n">${fu(s.units)}</td><td class="n">${won(s.gross)}</td></tr>`).join('')}</tbody></table>`;
   R.months.forEach(m => { const x = matrixHTML(R, m, ''); if (x) h += `<div class="pb">${head.replace('정산서', m.replace('-', '년 ') + '월 공수표')}${x}</div>`; });
+  if (R.logs.length) h += `<div class="pb">${head.replace('정산서', '출퇴근 기록')}${logsHTML(R, '')}</div>`;
   printHTML(h, fname(R, 'pdf').replace(/\.pdf$/, ''));
 }
 function printHTML(h, title) {
@@ -827,6 +910,17 @@ function viewSettings() {
       <input type="file" id="bkFile" accept=".json,application/json" hidden>
     </div>
     <p class="muted small" style="margin:0">마지막 수동 백업: ${lb} · 노트북에서 저장 파일을 <b>클라우드 동기화 폴더(OneDrive·구글 드라이브 등)</b>에 만들어 두면 PC가 고장 나도 안전합니다. 스마트폰은 브라우저 보안상 지정한 파일에 자동으로 쓸 수 없으므로, 위의 <b>📱 폰에 백업 저장</b>으로 "파일에 저장"·구글 드라이브·카카오톡 등에 보관하세요. 노트북과도 자동 동기화되지 않으니 백업 파일로 옮기세요.</p></div>
+  <div class="card"><h2>⏱ 출퇴근 시간</h2>
+    <p class="muted small" style="margin-top:0">공수 입력 화면에서 출근·퇴근 시간을 기록합니다. 자정을 넘기는 근무도 계산됩니다.</p>
+    <div class="fg">
+      <label class="w2" style="flex-direction:row;align-items:center;gap:8px;color:var(--ink)"><input type="checkbox" id="stTimes" ${S.settings.times ? 'checked' : ''}> 출퇴근 시간 입력 사용</label>
+      <label class="w2" style="flex-direction:row;align-items:center;gap:8px;color:var(--ink)"><input type="checkbox" id="stAuto" ${S.settings.auto ? 'checked' : ''}> 출·퇴근 시간으로 <b>공수 자동 계산</b> (0.5 단위 반올림, 최대 4.0)</label>
+      <label>1공수 기준 시간 (시간)<input id="stStd" value="${S.settings.std}" inputmode="decimal"></label>
+      <label>휴게시간 (분, 4시간 초과 근무 시 차감)<input id="stBrk" value="${S.settings.brk}" inputmode="numeric"></label>
+      <label>기본 출근 시간 (일괄 입력용)<input type="time" id="stIn" value="${S.settings.defIn}"></label>
+      <label>기본 퇴근 시간 (일괄 입력용)<input type="time" id="stOut" value="${S.settings.defOut}"></label>
+    </div>
+    <p class="muted small" style="margin-bottom:0">예) 07:00~17:00, 휴게 60분, 기준 8시간 → 근무 9시간 → <b>1.0공수</b> (9÷8=1.125 → 0.5 단위 반올림)</p></div>
   <div class="card"><h2>상호 · 사업주</h2><div class="fg">
     <label>상호(정산서 제목)<input id="coName" value="${esc(S.company.name)}"></label><label>사업주 이름<input id="coOwner" value="${esc(S.company.owner)}"></label></div></div>
   <div class="card"><h2>등급 · 기본 일당</h2><p class="muted small" style="margin-top:0">인부 등록 시 등급을 고르면 아래 일당이 기본값으로 들어갑니다. 인부별 개별 단가는 인부 정보에서 따로 바꿀 수 있습니다.</p>
@@ -839,6 +933,9 @@ function viewSettings() {
 }
 function readSettings() {
   S.company.name = $('#coName').value.trim(); S.company.owner = $('#coOwner').value.trim();
+  S.settings.times = $('#stTimes').checked; S.settings.auto = $('#stAuto').checked;
+  S.settings.std = Math.max(1, parseFloat($('#stStd').value) || 8); S.settings.brk = Math.max(0, parseInt($('#stBrk').value) || 0);
+  S.settings.defIn = $('#stIn').value || '07:00'; S.settings.defOut = $('#stOut').value || '17:00';
   const names = new Map(S.grades.map((g, i) => [i, g.name]));
   $$('.gn').forEach(el => {
     const i = +el.dataset.i, nn = el.value.trim() || names.get(i);
@@ -869,7 +966,16 @@ const HELP = [
     <li><b>전날 복사</b>: 가장 최근 기록을 오늘로 복사합니다. 이미 입력한 인부는 건드리지 않습니다.</li>
     <li><b>기간 일괄 입력</b>: 여러 날을 한 번에 넣습니다. 제외할 요일(기본: 일요일)을 정할 수 있습니다.</li>
     <li>아래 파란 바에 그날의 인원·공수·일당 합계가 나옵니다.</li>
+    <li><b>출퇴근 시간</b>은 인부 줄의 <kbd>출근</kbd> <kbd>퇴근</kbd> 칸에 입력합니다. 자세한 내용은 아래 "출퇴근 시간" 항목을 보세요.</li>
     <li>"-"는 <b>입력 안 함</b>, "휴무"는 <b>쉬는 날로 기록</b>한 것입니다. 휴무는 일당 0원이고 근무일에 포함되지 않습니다.</li></ul>`],
+  ['times', '⏱ 출퇴근 시간', [], `
+    <ul><li>공수 입력 화면에서 인부 줄마다 <b>출근·퇴근</b> 시간을 넣으면 근무시간이 표시됩니다. 자정을 넘기는 근무(예: 22:00~06:00)도 계산됩니다.</li>
+    <li><b>공수 자동 계산</b>(설정에서 켜고 끌 수 있음): 근무시간에서 휴게시간(기본 60분, 4시간 초과 시)을 빼고 1공수 기준 시간(기본 8시간)으로 나눠 0.5 단위로 반올림합니다. 자동으로 들어간 공수는 드롭다운에서 언제든 직접 바꿀 수 있습니다.</li>
+    <li><b>시간 일괄 입력</b>: 인부를 체크하고 출근·퇴근 시간을 정한 뒤 <kbd>선택 인원에 시간 입력</kbd>. 기본 시간은 설정에서 바꿉니다.</li>
+    <li><b>전날 복사</b>와 <b>기간 일괄 입력</b>에도 시간이 함께 들어갑니다. (기간 일괄 입력에서는 시간으로 공수를 다시 계산하지 않고, 고른 공수를 그대로 씁니다.)</li>
+    <li>휴무로 바꾸면 시간 기록은 지워지고, 시간을 입력하면 휴무가 풀립니다.</li>
+    <li>정산 탭의 <b>⏱ 출퇴근 기록</b>, 엑셀의 "출퇴근기록" 시트, PDF 마지막 페이지에서 날짜별 출퇴근 내역을 볼 수 있습니다.</li>
+    <li>출퇴근 시간을 안 쓰면 설정에서 "출퇴근 시간 입력 사용"을 끄세요. 입력 화면이 예전처럼 간단해집니다.</li></ul>`],
   ['workers', '👷 인부 등록 · 단가 · 세금', ['workers'], `
     <ul><li><b>일당</b>은 인부마다 따로 정합니다. 등급을 고르면 설정의 기본 일당이 먼저 채워지고 직접 고칠 수 있습니다.</li>
     <li>일당을 바꾸면 <b>이미 입력한 기록의 단가도 바꿀지</b> 물어봅니다. [취소]하면 과거 기록은 그대로, 오늘부터 새 단가가 적용됩니다.</li>
@@ -935,7 +1041,8 @@ const A = {
   dprev() { setDate(addDays(ui.date, -1)); }, dnext() { setDate(addDays(ui.date, 1)); }, dtoday() { setDate(today()); },
   dec(el) { const id = el.closest('.row').dataset.w, r = S.records[rk(ui.date, id, ui.site)]; changeUnits(id, (r ? r.u : 0) - 0.5); },
   inc(el) { const id = el.closest('.row').dataset.w, r = S.records[rk(ui.date, id, ui.site)]; changeUnits(id, (r ? r.u : 0) + 0.5); },
-  bulkApply, bulkClear, copyPrev, rangeModal, rangeApply,
+  toggleTools() { ui.tools = !ui.tools; saveUI(); viewEntry(); },
+  bulkApply, bulkClear, bulkTime, copyPrev, rangeModal, rangeApply,
   newWorker() { workerForm(null); }, editWorker(el) { workerForm(W(el.dataset.w)); }, saveWorker, delWorker,
   rpMonth(el) { const d = new Date(); d.setMonth(d.getMonth() + (+el.dataset.d), 1); ui.from = iso(d); ui.to = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0)); viewReport(); },
   rpAll() { ui.from = '2000-01-01'; ui.to = '2099-12-31'; const R = buildReport(ui.from, ui.to, ui.rsite); if (R.rows.length) { ui.from = R.minD; ui.to = R.maxD; } viewReport(); },
@@ -965,6 +1072,7 @@ document.addEventListener('change', e => {
   else if (t.id === 'dSite') { ui.site = t.value; ui.sel = []; saveUI(); renderEntry(); }
   else if (t.id === 'chkAll') { const ws = entryWorkers().map(w => w.id); ui.sel = t.checked ? ws : []; $$('.row .sel').forEach(c => c.checked = t.checked); }
   else if (t.classList.contains('sel') && t.closest('.row')) { const id = t.closest('.row').dataset.w; ui.sel = t.checked ? [...new Set([...ui.sel, id])] : ui.sel.filter(x => x !== id); }
+  else if (t.classList.contains('tin') || t.classList.contains('tout')) { const row = t.closest('.row'), id = row.dataset.w; setTimes(ui.date, id, ui.site, $('.tin', row).value, $('.tout', row).value); save(); softRow(id); }
   else if (t.classList.contains('usel')) changeUnits(t.closest('.row').dataset.w, t.value === 'off' ? 'off' : (parseFloat(t.value) || 0));
   else if (t.id === 'dGrade' || t.id === 'dOnly') renderEntry();
   else if (t.id === 'wGrade' || t.id === 'wInact') renderWorkers();

@@ -67,7 +67,7 @@ main{max-width:1180px;margin:0 auto;padding:14px 16px 90px}
 .tm label{display:flex;gap:4px;align-items:center;white-space:nowrap}
 .tm input{min-height:34px;padding:3px 6px;width:128px}
 .toolToggle{display:none;width:100%;margin-bottom:8px;font-weight:700}
-.hrs{min-width:58px;font-weight:700;color:var(--ink)}
+.hrs{min-width:96px;font-weight:700;color:var(--ink);white-space:nowrap}
 details.card>summary{cursor:pointer}
 .row.on{background:var(--on);border-color:#b6dcc4}
 .row.off{background:#eef0f3;border-color:#d3d8df;color:#6a7686}
@@ -110,7 +110,7 @@ dialog::backdrop{background:rgba(10,20,30,.5)}
 #toast.show{opacity:.94}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .edit-grid{display:grid;grid-template-columns:1fr 130px 70px;gap:6px;align-items:center;margin-bottom:6px}
-.edit-grid.site{grid-template-columns:1fr 140px 140px 70px 60px}
+.edit-grid.site{grid-template-columns:1fr 140px 140px 110px 70px 60px}
 #printArea{display:none}
 @media (max-width:760px){
   body{padding-bottom:calc(64px + env(safe-area-inset-bottom))}
@@ -230,7 +230,7 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 const LS_KEY = 'ildang_v1', UI_KEY = 'ildang_ui_v1';
 let S, ui = { tools: false, tab: 'entry', date: today(), site: '', sel: [], from: '', to: '', rsite: '', pii: false };
 
-const SET_DEF = { times: true, auto: true, std: 8, brk: 60, defIn: '07:00', defOut: '17:00' };
+const SET_DEF = { times: true, auto: true, std: 8, brk: 60, otBlock: 3, otRound: 'round', defIn: '07:00', defOut: '16:00' };
 function fixS() { S.settings = Object.assign({}, SET_DEF, S.settings || {}); }
 function defaultState() {
   const sid = uid();
@@ -267,16 +267,21 @@ const SITE = id => S.sites.find(s => s.id === id);
 const gradeIdx = n => { const i = S.grades.findIndex(g => g.name === n); return i < 0 ? 99 : i; };
 const gradeRate = n => (S.grades.find(g => g.name === n) || {}).rate || 0;
 const mins = t => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
-function netHours(a, b) {  // 근무시간(시간) = 퇴근-출근 (자정 넘김 지원) - 휴게(4시간 초과 시)
-  if (!a || !b) return 0;
-  let d = mins(b) - mins(a); if (d === 0) return 0; if (d < 0) d += 1440;
-  let h = d / 60; if (h > 4) h -= (S.settings.brk || 0) / 60;
-  return Math.max(0, h);
+const otBlockFor = sid => { const st = SITE(sid), v = st && parseFloat(st.ot); return v > 0 ? v : (S.settings.otBlock || 3); };
+/* 근무 계산: 정규(근무 std시간 + 점심 brk분 = 체류 9시간)=1공수, 이후 잔업은 otBlock시간(식사 포함)마다 +0.5공수 */
+function calcWork(a, b, sid) {
+  const z = { net: 0, stay: 0, ot: 0, u: 0 }; if (!a || !b) return z;
+  let d = mins(b) - mins(a); if (d === 0) return z; if (d < 0) d += 1440;
+  const stay = d / 60, lunch = (S.settings.brk || 0) / 60, std = S.settings.std || 8;
+  const net = Math.max(0, stay > 4 ? stay - lunch : stay), ot = Math.max(0, stay - (std + lunch));
+  let u;
+  if (ot > 0) { const raw = ot / otBlockFor(sid), n = S.settings.otRound === 'floor' ? Math.floor(raw + 1e-9) : Math.round(raw); u = 1 + 0.5 * n; }
+  else u = Math.round(net / std * 2) / 2;
+  return { net, stay, ot, u: Math.min(4, Math.max(net > 0 ? 0.5 : 0, u)) };
 }
-function autoUnits(a, b) {
-  const h = netHours(a, b); if (h <= 0) return 0;
-  return Math.min(4, Math.max(0.5, Math.round(h / (S.settings.std || 8) * 2) / 2));
-}
+const netHours = (a, b) => calcWork(a, b).net;
+const autoUnits = (a, b, sid) => calcWork(a, b, sid).u;
+const hrsText = (rec, sid) => { if (!rec) return ''; const c = calcWork(rec.in, rec.out, sid); return c.net ? `${fu(c.net)}시간${c.ot ? ` · 잔업 ${fu(c.ot)}h` : ''}` : ''; };
 function setUnits(d, wid, sid, u) {
   const k = rk(d, wid, sid), prev = S.records[k], r = prev ? prev.r : (W(wid).rate || 0);
   if (u === 'off') { S.records[k] = { u: 0, off: 1, r }; return; }          // 휴무: 시간 기록은 지움
@@ -291,7 +296,7 @@ function setTimes(d, wid, sid, tin, tout) {
   delete rec.off;
   if (tin) rec.in = tin; else delete rec.in;
   if (tout) rec.out = tout; else delete rec.out;
-  if (S.settings.auto && rec.in && rec.out) rec.u = autoUnits(rec.in, rec.out);
+  if (S.settings.auto && rec.in && rec.out) rec.u = autoUnits(rec.in, rec.out, sid);
 }
 function sortWorkers(a, b) { return gradeIdx(a.grade) - gradeIdx(b.grade) || a.name.localeCompare(b.name, 'ko'); }
 function taxOf(w, gross) {
@@ -474,13 +479,13 @@ function entryWorkers() {
 function rowHTML(w) {
   const d = ui.date, s = ui.site, rec = S.records[rk(d, w.id, s)], u = rec ? rec.u : 0, isOff = !!(rec && rec.off), rate = rec ? rec.r : (w.rate || 0);
   let other = 0; S.sites.forEach(x => { if (x.id !== s) { const r = S.records[rk(d, w.id, x.id)]; if (r) other += r.u; } });
-  const hrs = rec ? netHours(rec.in, rec.out) : 0, T = S.settings.times;
+  const T = S.settings.times;
   return `<div class="row ${u ? 'on' : isOff ? 'off' : ''} ${T ? '' : 'notm'}" data-w="${w.id}">
     <input type="checkbox" class="sel" ${ui.sel.includes(w.id) ? 'checked' : ''}>
     <div class="nm"><b>${esc(w.name)}</b>${other ? `<span class="tag">다른 현장 ${fu(other)}공수</span>` : ''}${!w.rate ? '<span class="tag">단가 미설정</span>' : ''}
       <small>${esc(w.grade)} · ${won(rate)}원</small></div>
     <div class="ctl"><button data-act="dec" aria-label="0.5 감소">−</button><select class="usel">${unitOpts(isOff ? 'off' : u, true, true)}</select><button data-act="inc" aria-label="0.5 증가">+</button></div>
-    ${T ? `<div class="tm"><label>출근 <input type="time" class="tin" value="${rec && rec.in || ''}"></label><label>퇴근 <input type="time" class="tout" value="${rec && rec.out || ''}"></label><span class="hrs">${hrs ? fu(hrs) + '시간' : ''}</span></div>` : ''}
+    ${T ? `<div class="tm"><label>출근 <input type="time" class="tin" value="${rec && rec.in || ''}"></label><label>퇴근 <input type="time" class="tout" value="${rec && rec.out || ''}"></label><span class="hrs">${hrsText(rec, s)}</span></div>` : ''}
     <div class="amt">${u ? won(u * rate) + '원' : isOff ? '휴무' : ''}</div></div>`;
 }
 function renderEntry() {
@@ -509,11 +514,11 @@ function renderSum() {
 }
 function softRow(wid) {  // 시간 입력 중 포커스가 끊기지 않도록 행을 다시 그리지 않고 값만 갱신
   const el = $(`.row[data-w="${wid}"]`); if (!el) return;
-  const w = W(wid), rec = S.records[rk(ui.date, wid, ui.site)], u = rec ? rec.u : 0, isOff = !!(rec && rec.off), rate = rec ? rec.r : (w.rate || 0), h = rec ? netHours(rec.in, rec.out) : 0;
+  const w = W(wid), rec = S.records[rk(ui.date, wid, ui.site)], u = rec ? rec.u : 0, isOff = !!(rec && rec.off), rate = rec ? rec.r : (w.rate || 0);
   el.classList.toggle('on', !!u); el.classList.toggle('off', !u && isOff);
   $('.usel', el).value = isOff ? 'off' : String(u);
   $('.amt', el).textContent = u ? won(u * rate) + '원' : isOff ? '휴무' : '';
-  $('.hrs', el).textContent = h ? fu(h) + '시간' : '';
+  $('.hrs', el).textContent = hrsText(rec, ui.site);
   renderSum();
 }
 function updateRow(wid) {
@@ -537,7 +542,8 @@ function bulkTime() {
   const ids = selectedOrAll(); if (!ids.length) return toast('시간을 넣을 인부를 먼저 체크하세요 (전체선택 가능)');
   const a = $('#bIn').value, b = $('#bOut').value; if (!a || !b) return toast('출근·퇴근 시간을 모두 입력하세요');
   ids.forEach(id => setTimes(ui.date, id, ui.site, a, b)); save(); renderEntry();
-  toast(`${ids.length}명 ${a}~${b} (${fu(netHours(a, b))}시간)` + (S.settings.auto ? ` · ${fu(autoUnits(a, b))}공수 자동 입력` : ''));
+  const cw = calcWork(a, b, ui.site);
+  toast(`${ids.length}명 ${a}~${b} (${fu(cw.net)}시간${cw.ot ? ', 잔업 ' + fu(cw.ot) + 'h' : ''})` + (S.settings.auto ? ` · ${fu(cw.u)}공수 자동 입력` : ''));
 }
 function bulkClear() {
   const ids = selectedOrAll(); if (!ids.length) return toast('삭제할 인부를 체크하세요');
@@ -659,7 +665,7 @@ function buildReport(from, to, site) {
     const [d, wid, sid] = k.split('|');
     if (d < from || d > to || (site && sid !== site)) continue;
     const w = W(wid); if (!w) continue;
-    if (v.in || v.out) logs.push({ d, w, site: (SITE(sid) || {}).name || '', tin: v.in || '', tout: v.out || '', h: netHours(v.in, v.out), u: v.u || 0 });
+    if (v.in || v.out) logs.push({ d, w, site: (SITE(sid) || {}).name || '', tin: v.in || '', tout: v.out || '', h: netHours(v.in, v.out), ot: calcWork(v.in, v.out, sid).ot, u: v.u || 0 });
     if (v.off) { (offBy[wid] = offBy[wid] || {})[d] = 1; continue; }
     if (!v.u) continue;
     let r = rows.get(wid); if (!r) rows.set(wid, r = { w, units: 0, gross: 0, byDate: {} });
@@ -706,9 +712,9 @@ function matrixHTML(R, m, cls) {
 const dshort = d => `${d.slice(5)}(${DOW[parseD(d).getDay()]})`;
 function logsHTML(R, cls) {
   const tot = R.logs.reduce((a, l) => a + l.h, 0);
-  return `<table class="${cls}"><thead><tr><th>날짜</th><th>이름</th><th>현장</th><th>출근</th><th>퇴근</th><th class="n">근무시간</th><th class="n">공수</th></tr></thead><tbody>` +
-    R.logs.map(l => `<tr><td>${dshort(l.d)}</td><td>${esc(l.w.name)}</td><td>${esc(l.site)}</td><td>${l.tin || ''}</td><td>${l.tout || ''}</td><td class="n">${l.h ? fu(l.h) : ''}</td><td class="n">${l.u ? fu(l.u) : ''}</td></tr>`).join('') +
-    `<tr class="tot"><td colspan="5">합계 (${R.logs.length}건)</td><td class="n">${fu(tot)}</td><td class="n">${fu(R.logs.reduce((a, l) => a + l.u, 0))}</td></tr></tbody></table>`;
+  return `<table class="${cls}"><thead><tr><th>날짜</th><th>이름</th><th>현장</th><th>출근</th><th>퇴근</th><th class="n">근무시간</th><th class="n">잔업</th><th class="n">공수</th></tr></thead><tbody>` +
+    R.logs.map(l => `<tr><td>${dshort(l.d)}</td><td>${esc(l.w.name)}</td><td>${esc(l.site)}</td><td>${l.tin || ''}</td><td>${l.tout || ''}</td><td class="n">${l.h ? fu(l.h) : ''}</td><td class="n">${l.ot ? fu(l.ot) : ''}</td><td class="n">${l.u ? fu(l.u) : ''}</td></tr>`).join('') +
+    `<tr class="tot"><td colspan="5">합계 (${R.logs.length}건)</td><td class="n">${fu(tot)}</td><td class="n">${fu(R.logs.reduce((a, l) => a + l.ot, 0))}</td><td class="n">${fu(R.logs.reduce((a, l) => a + l.u, 0))}</td></tr></tbody></table>`;
 }
 function viewReport() {
   if (!ui.from) { ui.from = monthStart(); ui.to = today(); }
@@ -794,10 +800,10 @@ function buildXlsx(R, pii) {
   sheets.push({ name: '정산요약', rows, cols: [5, 12, 9, 20, 8, 9, 14, 12, 12, 14, 15, 16, 10, 20, 16] });
   if (R.bySite.length > 1) sheets.push({ name: '현장별', rows: [[{ v: '현장', s: 1 }, { v: '총공수', s: 1 }, { v: '인건비(세전)', s: 1 }], ...R.bySite.map(s => [s.name, { v: s.units, s: 3 }, { v: s.gross, s: 2 }])], cols: [24, 10, 16] });
   if (R.logs.length) {
-    const lr = [[{ v: '날짜', s: 1 }, { v: '이름', s: 1 }, { v: '현장', s: 1 }, { v: '출근', s: 1 }, { v: '퇴근', s: 1 }, { v: '근무시간', s: 1 }, { v: '공수', s: 1 }]];
-    R.logs.forEach(l => lr.push([l.d + ' (' + DOW[parseD(l.d).getDay()] + ')', l.w.name, l.site, l.tin, l.tout, l.h ? { v: Math.round(l.h * 100) / 100, s: 3 } : '', l.u ? { v: l.u, s: 3 } : '']));
-    lr.push([{ v: '합계', s: 4 }, '', '', '', '', { v: Math.round(R.logs.reduce((a, l) => a + l.h, 0) * 100) / 100, s: 6 }, { v: R.logs.reduce((a, l) => a + l.u, 0), s: 6 }]);
-    sheets.push({ name: '출퇴근기록', rows: lr, cols: [16, 12, 16, 8, 8, 10, 8] });
+    const lr = [[{ v: '날짜', s: 1 }, { v: '이름', s: 1 }, { v: '현장', s: 1 }, { v: '출근', s: 1 }, { v: '퇴근', s: 1 }, { v: '근무시간', s: 1 }, { v: '잔업(시간)', s: 1 }, { v: '공수', s: 1 }]];
+    R.logs.forEach(l => lr.push([l.d + ' (' + DOW[parseD(l.d).getDay()] + ')', l.w.name, l.site, l.tin, l.tout, l.h ? { v: Math.round(l.h * 100) / 100, s: 3 } : '', l.ot ? { v: Math.round(l.ot * 100) / 100, s: 3 } : '', l.u ? { v: l.u, s: 3 } : '']));
+    lr.push([{ v: '합계', s: 4 }, '', '', '', '', { v: Math.round(R.logs.reduce((a, l) => a + l.h, 0) * 100) / 100, s: 6 }, { v: Math.round(R.logs.reduce((a, l) => a + l.ot, 0) * 100) / 100, s: 6 }, { v: R.logs.reduce((a, l) => a + l.u, 0), s: 6 }]);
+    sheets.push({ name: '출퇴근기록', rows: lr, cols: [16, 12, 16, 8, 8, 10, 10, 8] });
   }
   R.months.forEach(m => {
     const dates = monthDates(m, R.from, R.to), rs = R.rows.filter(r => dates.some(d => r.byDate[d])); if (!rs.length) return;
@@ -910,24 +916,29 @@ function viewSettings() {
       <input type="file" id="bkFile" accept=".json,application/json" hidden>
     </div>
     <p class="muted small" style="margin:0">마지막 수동 백업: ${lb} · 노트북에서 저장 파일을 <b>클라우드 동기화 폴더(OneDrive·구글 드라이브 등)</b>에 만들어 두면 PC가 고장 나도 안전합니다. 스마트폰은 브라우저 보안상 지정한 파일에 자동으로 쓸 수 없으므로, 위의 <b>📱 폰에 백업 저장</b>으로 "파일에 저장"·구글 드라이브·카카오톡 등에 보관하세요. 노트북과도 자동 동기화되지 않으니 백업 파일로 옮기세요.</p></div>
-  <div class="card"><h2>⏱ 출퇴근 시간</h2>
+  <div class="card"><h2>⏱ 출퇴근 시간 · 공수 자동 계산</h2>
     <p class="muted small" style="margin-top:0">공수 입력 화면에서 출근·퇴근 시간을 기록합니다. 자정을 넘기는 근무도 계산됩니다.</p>
     <div class="fg">
       <label class="w2" style="flex-direction:row;align-items:center;gap:8px;color:var(--ink)"><input type="checkbox" id="stTimes" ${S.settings.times ? 'checked' : ''}> 출퇴근 시간 입력 사용</label>
-      <label class="w2" style="flex-direction:row;align-items:center;gap:8px;color:var(--ink)"><input type="checkbox" id="stAuto" ${S.settings.auto ? 'checked' : ''}> 출·퇴근 시간으로 <b>공수 자동 계산</b> (0.5 단위 반올림, 최대 4.0)</label>
-      <label>1공수 기준 시간 (시간)<input id="stStd" value="${S.settings.std}" inputmode="decimal"></label>
-      <label>휴게시간 (분, 4시간 초과 근무 시 차감)<input id="stBrk" value="${S.settings.brk}" inputmode="numeric"></label>
+      <label class="w2" style="flex-direction:row;align-items:center;gap:8px;color:var(--ink)"><input type="checkbox" id="stAuto" ${S.settings.auto ? 'checked' : ''}> 출·퇴근 시간으로 <b>공수 자동 계산</b></label>
+      <label>정규 근무시간 (점심 제외, 시간)<input id="stStd" value="${S.settings.std}" inputmode="decimal"></label>
+      <label>점심시간 (분)<input id="stBrk" value="${S.settings.brk}" inputmode="numeric"></label>
+      <label>잔업 1단위(+0.5공수) 시간 — 식사 포함
+        <select id="stOtBlock">${[...new Set([3, 2.5, 2, S.settings.otBlock])].sort((x, y) => y - x).map(v => `<option value="${v}" ${v === S.settings.otBlock ? 'selected' : ''}>${v}시간${v === 3 ? ' (식사 포함, 기본)' : v === 2.5 ? ' (저녁 먹고 2시간 30분)' : v === 2 ? ' (저녁 안 먹고 일찍 마침)' : ''}</option>`).join('')}</select></label>
+      <label>잔업이 1단위에 못 미칠 때
+        <select id="stOtRound"><option value="round" ${S.settings.otRound !== 'floor' ? 'selected' : ''}>절반 이상이면 1단위로 인정 (반올림)</option><option value="floor" ${S.settings.otRound === 'floor' ? 'selected' : ''}>채운 단위만 인정 (내림)</option></select></label>
       <label>기본 출근 시간 (일괄 입력용)<input type="time" id="stIn" value="${S.settings.defIn}"></label>
       <label>기본 퇴근 시간 (일괄 입력용)<input type="time" id="stOut" value="${S.settings.defOut}"></label>
     </div>
-    <p class="muted small" style="margin-bottom:0">예) 07:00~17:00, 휴게 60분, 기준 8시간 → 근무 9시간 → <b>1.0공수</b> (9÷8=1.125 → 0.5 단위 반올림)</p></div>
+    <p class="muted small" style="margin-bottom:0"><b>계산 방식</b> 출근 후 정규 체류(근무 ${S.settings.std}시간 + 점심 ${S.settings.brk}분 = ${fu(S.settings.std + S.settings.brk / 60)}시간)가 <b>1.0공수</b>입니다. 그 이후 잔업은 ${S.settings.otBlock}시간마다 <b>+0.5공수</b>입니다.<br>
+    예) 07:00~${fu(7 + S.settings.std + S.settings.brk / 60).replace('.0', '')}:00 = 1.0 · ${S.settings.otBlock}시간 연장 = 1.5 · ${S.settings.otBlock * 2}시간 연장 = 2.0공수. 정규 시간에 못 미치면 근무시간 ÷ ${S.settings.std}시간을 0.5 단위로 반올림합니다. 회사(현장)마다 잔업 시간이 다르면 아래 <b>현장 · 공사기간</b>에서 현장별로 따로 정할 수 있습니다.</p></div>
   <div class="card"><h2>상호 · 사업주</h2><div class="fg">
     <label>상호(정산서 제목)<input id="coName" value="${esc(S.company.name)}"></label><label>사업주 이름<input id="coOwner" value="${esc(S.company.owner)}"></label></div></div>
   <div class="card"><h2>등급 · 기본 일당</h2><p class="muted small" style="margin-top:0">인부 등록 시 등급을 고르면 아래 일당이 기본값으로 들어갑니다. 인부별 개별 단가는 인부 정보에서 따로 바꿀 수 있습니다.</p>
     <div id="gList">${S.grades.map((g, i) => `<div class="edit-grid"><input class="gn" data-i="${i}" value="${esc(g.name)}"><input class="gr" data-i="${i}" value="${g.rate ? won(g.rate) : ''}" inputmode="numeric" placeholder="기본 일당"><button data-act="delGrade" data-i="${i}" class="danger">삭제</button></div>`).join('')}</div>
     <button data-act="addGrade">+ 등급 추가</button></div>
   <div class="card"><h2>현장 · 공사기간</h2><p class="muted small" style="margin-top:0">현장이 하나뿐이어도 그대로 쓰면 됩니다. 시작·종료일을 정하면 그 밖의 날짜에 입력할 때 경고가 뜹니다.</p>
-    <div id="sList">${S.sites.map((s, i) => `<div class="edit-grid site"><input class="sn" data-i="${i}" value="${esc(s.name)}"><input type="date" class="ss" data-i="${i}" value="${s.start}" title="시작일"><input type="date" class="se" data-i="${i}" value="${s.end}" title="종료일"><label class="small"><input type="checkbox" class="sa" data-i="${i}" ${s.active ? 'checked' : ''}> 진행</label><button class="danger" data-act="delSite" data-i="${i}">삭제</button></div>`).join('')}</div>
+    <div id="sList">${S.sites.map((s, i) => `<div class="edit-grid site"><input class="sn" data-i="${i}" value="${esc(s.name)}"><input type="date" class="ss" data-i="${i}" value="${s.start}" title="시작일"><input type="date" class="se" data-i="${i}" value="${s.end}" title="종료일"><input class="so" data-i="${i}" value="${s.ot || ''}" inputmode="decimal" placeholder="잔업 단위(h)" title="이 현장만 잔업 1단위(0.5공수) 시간을 다르게 할 때 입력. 비우면 공통값 사용"><label class="small"><input type="checkbox" class="sa" data-i="${i}" ${s.active ? 'checked' : ''}> 진행</label><button class="danger" data-act="delSite" data-i="${i}">삭제</button></div>`).join('')}</div>
     <button data-act="addSite">+ 현장 추가</button></div>
   <div class="card"><h2>⚠ 데이터 초기화</h2><button class="danger" data-act="wipe">모든 데이터 삭제</button></div>`;
 }
@@ -935,7 +946,8 @@ function readSettings() {
   S.company.name = $('#coName').value.trim(); S.company.owner = $('#coOwner').value.trim();
   S.settings.times = $('#stTimes').checked; S.settings.auto = $('#stAuto').checked;
   S.settings.std = Math.max(1, parseFloat($('#stStd').value) || 8); S.settings.brk = Math.max(0, parseInt($('#stBrk').value) || 0);
-  S.settings.defIn = $('#stIn').value || '07:00'; S.settings.defOut = $('#stOut').value || '17:00';
+  S.settings.otBlock = parseFloat($('#stOtBlock').value) || 3; S.settings.otRound = $('#stOtRound').value;
+  S.settings.defIn = $('#stIn').value || '07:00'; S.settings.defOut = $('#stOut').value || '16:00';
   const names = new Map(S.grades.map((g, i) => [i, g.name]));
   $$('.gn').forEach(el => {
     const i = +el.dataset.i, nn = el.value.trim() || names.get(i);
@@ -945,6 +957,7 @@ function readSettings() {
   $$('.sn').forEach(el => { S.sites[+el.dataset.i].name = el.value.trim() || S.sites[+el.dataset.i].name; });
   $$('.ss').forEach(el => S.sites[+el.dataset.i].start = el.value);
   $$('.se').forEach(el => S.sites[+el.dataset.i].end = el.value);
+  $$('.so').forEach(el => { const v = parseFloat(el.value); S.sites[+el.dataset.i].ot = v > 0 ? v : ''; });
   $$('.sa').forEach(el => S.sites[+el.dataset.i].active = el.checked);
   if (!S.sites.some(s => s.active)) S.sites[0].active = true;
   save();
@@ -968,14 +981,19 @@ const HELP = [
     <li>아래 파란 바에 그날의 인원·공수·일당 합계가 나옵니다.</li>
     <li><b>출퇴근 시간</b>은 인부 줄의 <kbd>출근</kbd> <kbd>퇴근</kbd> 칸에 입력합니다. 자세한 내용은 아래 "출퇴근 시간" 항목을 보세요.</li>
     <li>"-"는 <b>입력 안 함</b>, "휴무"는 <b>쉬는 날로 기록</b>한 것입니다. 휴무는 일당 0원이고 근무일에 포함되지 않습니다.</li></ul>`],
-  ['times', '⏱ 출퇴근 시간', [], `
-    <ul><li>공수 입력 화면에서 인부 줄마다 <b>출근·퇴근</b> 시간을 넣으면 근무시간이 표시됩니다. 자정을 넘기는 근무(예: 22:00~06:00)도 계산됩니다.</li>
-    <li><b>공수 자동 계산</b>(설정에서 켜고 끌 수 있음): 근무시간에서 휴게시간(기본 60분, 4시간 초과 시)을 빼고 1공수 기준 시간(기본 8시간)으로 나눠 0.5 단위로 반올림합니다. 자동으로 들어간 공수는 드롭다운에서 언제든 직접 바꿀 수 있습니다.</li>
+  ['times', '⏱ 출퇴근 시간 · 공수 자동 계산', [], `
+    <ul><li>공수 입력 화면에서 인부 줄마다 <b>출근·퇴근</b> 시간을 넣으면 근무시간이 표시되고, 설정에 따라 <b>공수가 자동 입력</b>됩니다. 자정을 넘기는 근무도 계산됩니다.</li>
+    <li><b>기본 규칙</b>: 정규 근무 8시간 + 점심 1시간 = 체류 9시간이 <b>1공수</b>입니다. (7시~4시, 8시~5시, 9시~6시)</li>
+    <li><b>잔업(야근)</b>: 정규 퇴근 이후 <b>3시간(식사 포함)마다 +0.5공수</b>입니다. 예) 7시 출근 → 19시 퇴근 = 1.5공수, 22시 퇴근 = 2.0공수.</li>
+    <li>회사마다 다르면 설정에서 <b>잔업 1단위</b>를 3시간 / 2시간 30분(저녁 먹고) / 2시간(저녁 안 먹고 일찍 마침) 중에서 고르세요. 현장마다 다르면 <b>설정 → 현장</b>의 "잔업 단위(h)"에 그 현장만 따로 입력합니다.</li>
+    <li>잔업이 1단위에 못 미칠 때(예: 1.5시간만 함)는 설정에서 "절반 이상이면 인정(반올림)" 또는 "채운 단위만 인정(내림)"을 고릅니다.</li>
+    <li>정규 시간에 못 미치면(조퇴 등) 근무시간 ÷ 8시간을 0.5 단위로 반올림합니다. 예) 7시~12시 = 0.5공수.</li>
+    <li>자동으로 들어간 공수가 실제와 다르면 드롭다운에서 언제든 직접 바꾸세요. 시간 기록은 그대로 남습니다.</li>
     <li><b>시간 일괄 입력</b>: 인부를 체크하고 출근·퇴근 시간을 정한 뒤 <kbd>선택 인원에 시간 입력</kbd>. 기본 시간은 설정에서 바꿉니다.</li>
-    <li><b>전날 복사</b>와 <b>기간 일괄 입력</b>에도 시간이 함께 들어갑니다. (기간 일괄 입력에서는 시간으로 공수를 다시 계산하지 않고, 고른 공수를 그대로 씁니다.)</li>
+    <li><b>전날 복사</b>와 <b>기간 일괄 입력</b>에도 시간이 함께 들어갑니다. (기간 일괄 입력은 시간으로 공수를 다시 계산하지 않고 고른 공수를 그대로 씁니다.)</li>
     <li>휴무로 바꾸면 시간 기록은 지워지고, 시간을 입력하면 휴무가 풀립니다.</li>
-    <li>정산 탭의 <b>⏱ 출퇴근 기록</b>, 엑셀의 "출퇴근기록" 시트, PDF 마지막 페이지에서 날짜별 출퇴근 내역을 볼 수 있습니다.</li>
-    <li>출퇴근 시간을 안 쓰면 설정에서 "출퇴근 시간 입력 사용"을 끄세요. 입력 화면이 예전처럼 간단해집니다.</li></ul>`],
+    <li>정산 탭의 <b>⏱ 출퇴근 기록</b>, 엑셀의 "출퇴근기록" 시트, PDF에서 날짜별 출근·퇴근·근무시간·잔업·공수를 볼 수 있습니다.</li>
+    <li>출퇴근 시간을 안 쓰면 설정에서 "출퇴근 시간 입력 사용"을 끄세요.</li></ul>`],
   ['workers', '👷 인부 등록 · 단가 · 세금', ['workers'], `
     <ul><li><b>일당</b>은 인부마다 따로 정합니다. 등급을 고르면 설정의 기본 일당이 먼저 채워지고 직접 고칠 수 있습니다.</li>
     <li>일당을 바꾸면 <b>이미 입력한 기록의 단가도 바꿀지</b> 물어봅니다. [취소]하면 과거 기록은 그대로, 오늘부터 새 단가가 적용됩니다.</li>

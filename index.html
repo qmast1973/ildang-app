@@ -78,6 +78,8 @@ details.card>summary{cursor:pointer}
 .ctl button{width:44px;font-size:20px;font-weight:700;padding:0}
 .ctl select{width:84px;text-align:center;font-weight:700;font-size:16px}
 .amt{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.mini{font-size:12.5px;min-height:30px;padding:2px 9px;margin-top:5px;border-radius:7px;color:var(--pri)}
+.tag.bad{background:#fde0dc;color:#8c1d12}
 .tag{display:inline-block;font-size:12.5px;font-weight:600;background:#fde8c8;color:#7a4400;border-radius:6px;padding:1px 6px;margin-left:6px}
 .sumbar{position:sticky;bottom:0;background:var(--pri);color:#fff;border-radius:10px;padding:10px 16px;display:flex;gap:18px;flex-wrap:wrap;justify-content:space-between;box-shadow:0 -2px 10px rgba(0,0,0,.15)}
 .sumbar b{font-size:17px}
@@ -239,7 +241,7 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 const LS_KEY = 'ildang_v1', UI_KEY = 'ildang_ui_v1';
 let S, ui = { pw: '', pzip: false, tools: false, tab: 'entry', date: today(), site: '', sel: [], from: '', to: '', rsite: '', pii: false };
 
-const SET_DEF = { times: true, auto: true, std: 8, brk: 60, otBlock: 3, otRound: 'round', defIn: '07:00', defOut: '16:00' };
+const SET_DEF = { times: true, auto: true, std: 8, brk: 60, otBlock: 3, otRound: 'round', dayMax: 2, defIn: '07:00', defOut: '16:00' };
 function fixS() { S.settings = Object.assign({}, SET_DEF, S.settings || {}); }
 function defaultState() {
   const sid = uid();
@@ -291,25 +293,23 @@ function calcWork(a, b, sid) {
 const netHours = (a, b) => calcWork(a, b).net;
 const autoUnits = (a, b, sid) => calcWork(a, b, sid).u;
 const hrsText = (rec, sid) => { if (!rec) return ''; const c = calcWork(rec.in, rec.out, sid); return c.net ? `${fu(c.net)}시간${c.ot ? ` · 잔업 ${fu(c.ot)}h` : ''}` : ''; };
-let ovN = 0;   // 이번 입력으로 덮어쓴(지운) 다른 현장 기록 수
-function dropOthers(d, wid, sid) {   // 같은 날 같은 인부의 다른 현장 기록 삭제 → 나중 입력만 남김
-  S.sites.forEach(x => { if (x.id !== sid) { const k = rk(d, wid, x.id); if (S.records[k]) { delete S.records[k]; ovN++; } } });
+/* 기록은 (날짜·인부·현장)별로 하나. 같은 현장·같은 날 다시 입력하면 나중 값으로 덮어씀. 다른 현장은 따로 기록(오전/오후 지원 등) */
+const dayTotal = (d, wid) => S.sites.reduce((a, x) => { const r = S.records[rk(d, wid, x.id)]; return a + (r ? r.u : 0); }, 0);
+function dayWarn(ids) {   // 같은 날 현장 합계가 기준을 넘으면 중복 입력 의심 알림 (경고줄도 갱신)
+  const wEl = $('#dWarn'); if (wEl) wEl.innerHTML = entryWarn();
+  const bad = (Array.isArray(ids) ? ids : [ids]).filter(id => dayTotal(ui.date, id) > (S.settings.dayMax || 2));
+  if (bad.length) toast(`⚠ ${bad.length === 1 ? wname(bad[0]) : wname(bad[0]) + ' 외 ' + (bad.length - 1) + '명'}: 이 날 현장 합계 ${fu(dayTotal(ui.date, bad[0]))}공수 — 중복 입력이 아닌지 확인하세요`);
 }
-const hasRec = (d, wid) => S.sites.some(x => S.records[rk(d, wid, x.id)]);
-const ovTail = () => { const n = ovN; ovN = 0; return n ? ` · 다른 현장의 같은 날 기록 ${n}건은 덮어씀` : ''; };
-function ovToast() { if (ovN) { toast(`같은 날 다른 현장에 입력돼 있던 ${ovN}건을 이번 입력으로 덮어썼습니다`); ovN = 0; } }
 function setUnits(d, wid, sid, u) {
   const k = rk(d, wid, sid), prev = S.records[k], r = prev ? prev.r : (W(wid).rate || 0), t = Date.now();
-  if (u === 'off') { dropOthers(d, wid, sid); S.records[k] = { u: 0, off: 1, r, t }; return; }          // 휴무: 시간 기록은 지움
+  if (u === 'off') { S.records[k] = { u: 0, off: 1, r, t }; return; }          // 휴무: 시간 기록은 지움
   if (!u) { if (prev && (prev.in || prev.out)) S.records[k] = { u: 0, r, in: prev.in, out: prev.out, t }; else delete S.records[k]; return; }
-  dropOthers(d, wid, sid);
   const rec = { u, r, t }; if (prev && !prev.off) { if (prev.in) rec.in = prev.in; if (prev.out) rec.out = prev.out; }
   S.records[k] = rec;
 }
 function setTimes(d, wid, sid, tin, tout) {
   const k = rk(d, wid, sid); let rec = S.records[k];
   if (!tin && !tout) { if (rec) { delete rec.in; delete rec.out; if (!rec.u && !rec.off) delete S.records[k]; } return; }
-  dropOthers(d, wid, sid);
   if (!rec) rec = S.records[k] = { u: 0, r: W(wid).rate || 0 };
   rec.t = Date.now(); delete rec.off;
   if (tin) rec.in = tin; else delete rec.in;
@@ -496,40 +496,44 @@ function entryWorkers() {
 }
 function rowHTML(w) {
   const d = ui.date, s = ui.site, rec = S.records[rk(d, w.id, s)], u = rec ? rec.u : 0, isOff = !!(rec && rec.off), rate = rec ? rec.r : (w.rate || 0);
-  let other = 0; S.sites.forEach(x => { if (x.id !== s) { const r = S.records[rk(d, w.id, x.id)]; if (r) other += r.u; } });
+  const oth = []; S.sites.forEach(x => { if (x.id !== s) { const r = S.records[rk(d, w.id, x.id)]; if (r && (r.u || r.off)) oth.push({ n: x.name, u: r.u, off: r.off }); } });
+  const tot = u + oth.reduce((a, o) => a + o.u, 0), over = oth.length && tot > S.settings.dayMax;
   const T = S.settings.times;
   return `<div class="row ${u ? 'on' : isOff ? 'off' : ''} ${T ? '' : 'notm'}" data-w="${w.id}">
     <input type="checkbox" class="sel" ${ui.sel.includes(w.id) ? 'checked' : ''}>
-    <div class="nm"><b>${esc(w.name)}</b>${other ? `<span class="tag" title="같은 날 다른 현장에 입력돼 있습니다. 여기에 입력하면 그 기록은 지워지고 이 입력으로 바뀝니다.">다른 현장 ${fu(other)}공수</span>` : ''}${!w.rate ? '<span class="tag">단가 미설정</span>' : ''}
-      <small>${esc(w.grade)} · ${won(rate)}원</small></div>
+    <div class="nm"><b>${esc(w.name)}</b>${oth.length ? `<span class="tag ${over ? 'bad' : ''}" title="같은 날 다른 현장에도 기록돼 있습니다. 하루 합계 ${fu(tot)}공수${over ? ' (기준 ' + fu(S.settings.dayMax) + '공수 초과 — 중복 입력 확인)' : ''}">🔀 ${oth.map(o => esc(o.n) + ' ' + (o.off ? '휴무' : fu(o.u))).join(' · ')} · 합계 ${fu(tot)}</span>` : ''}${!w.rate ? '<span class="tag">단가 미설정</span>' : ''}
+      <small>${esc(w.grade)} · ${won(rate)}원</small>${S.sites.length > 1 ? '<button class="mini" data-act="splitOpen" title="하루를 여러 현장에 나눠 기록 (오전 이 현장, 오후 다른 현장 지원 등)">↔ 현장 나눠 입력</button>' : ''}</div>
     <div class="ctl"><button data-act="dec" aria-label="0.5 감소">−</button><select class="usel">${unitOpts(isOff ? 'off' : u, true, true)}</select><button data-act="inc" aria-label="0.5 증가">+</button></div>
     ${T ? `<div class="tm"><label>출근 <input type="time" class="tin" value="${rec && rec.in || ''}"></label><label>퇴근 <input type="time" class="tout" value="${rec && rec.out || ''}"></label><span class="hrs">${hrsText(rec, s)}</span></div>` : ''}
     <div class="amt">${u ? won(u * rate) + '원' : isOff ? '휴무' : ''}</div></div>`;
 }
-function renderEntry() {
+function entryWarn() {
   const d = ui.date, s = ui.site, st = SITE(s);
-  $('#dLabel').textContent = dlabel(d);
   let warn = '';
   if (st && ((st.start && d < st.start) || (st.end && d > st.end))) warn = `<div class="warn">⚠ ${esc(st.name)} 공사기간(${st.start || '시작 미정'} ~ ${st.end || '종료 미정'}) 밖의 날짜입니다.</div>`;
-  const dg = dupGroups(d).length; if (dg) warn += `<div class="warn">⚠ 이 날짜에 같은 인부 ${dg}명이 여러 현장에 중복 입력돼 공수가 합산됩니다. <button data-act="dupOpen">정리하기</button></div>`;
+  const dg = dupGroups(d).length; if (dg) warn += `<div class="warn">⚠ 이 날짜에 같은 인부의 현장 합계가 ${fu(S.settings.dayMax)}공수를 넘는 사람이 ${dg}명 있습니다. 나눠 일한 게 아니라면 중복 입력일 수 있습니다. <button data-act="dupOpen">확인하기</button></div>`;
   if (!S.workers.length) warn += `<div class="info">등록된 인부가 없습니다. <b>[인부]</b> 탭에서 먼저 인부를 등록하세요.</div>`;
-  $('#dWarn').innerHTML = warn + backupBanner();
+  return warn + backupBanner();
+}
+function renderEntry() {
+  $('#dLabel').textContent = dlabel(ui.date);
+  $('#dWarn').innerHTML = entryWarn();
   const ws = entryWorkers();
   $('#dList').innerHTML = ws.map(rowHTML).join('') || '<p class="muted">표시할 인부가 없습니다.</p>';
   $('#chkAll').checked = ws.length > 0 && ws.every(w => ui.sel.includes(w.id));
   renderSum();
 }
 function renderSum() {
-  const d = ui.date, s = ui.site; let n = 0, u = 0, amt = 0, nAll = 0, uAll = 0, aAll = 0, nOff = 0, hrsT = 0;
+  const d = ui.date, s = ui.site; let n = 0, u = 0, amt = 0, uAll = 0, aAll = 0, nOff = 0, hrsT = 0; const allW = new Set();
   for (const [k, v] of Object.entries(S.records)) {
     if (!k.startsWith(d + '|')) continue;
     if (v.off) { if (k.endsWith('|' + s)) nOff++; continue; }
     if (!v.u) continue;
-    uAll += v.u; aAll += v.u * v.r; nAll++;
+    uAll += v.u; aAll += v.u * v.r; allW.add(k.split('|')[1]);
     if (k.endsWith('|' + s)) { n++; u += v.u; amt += v.u * v.r; hrsT += netHours(v.in, v.out); }
   }
   $('#dSum').innerHTML = `<span>이 현장: <b>${n}</b>명 · <b>${fu(u)}</b>공수${nOff ? ` · 휴무 <b>${nOff}</b>명` : ''}${hrsT ? ` · 근무시간 <b>${fu(hrsT)}</b>시간` : ''}</span><span>일당 합계 <b>${won(amt)}원</b></span>` +
-    (S.sites.length > 1 ? `<span class="small" style="align-self:center">당일 전체 현장: ${nAll}명 · ${fu(uAll)}공수 · ${won(aAll)}원</span>` : '');
+    (S.sites.length > 1 ? `<span class="small" style="align-self:center">당일 전체 현장: ${allW.size}명 · ${fu(uAll)}공수 · ${won(aAll)}원</span>` : '');
 }
 function softRow(wid) {  // 시간 입력 중 포커스가 끊기지 않도록 행을 다시 그리지 않고 값만 갱신
   const el = $(`.row[data-w="${wid}"]`); if (!el) return;
@@ -546,32 +550,63 @@ function updateRow(wid) {
 }
 function changeUnits(wid, u) {
   if (u !== 'off') u = Math.max(0, Math.min(4, u));
-  setUnits(ui.date, wid, ui.site, u); save(); updateRow(wid); ovToast();
+  setUnits(ui.date, wid, ui.site, u); save(); updateRow(wid); dayWarn(wid);
 }
 
-/* ---- 같은 날 같은 인부의 중복(여러 현장) 기록 정리 ---- */
+
+/* ---- 한 인부의 하루를 여러 현장에 나눠 입력 (오전 A현장, 오후 B현장 지원 등) ---- */
+function splitDlg(wid) {
+  const w = W(wid), d = ui.date, sites = S.sites.filter(x => x.active || S.records[rk(d, wid, x.id)]);
+  openDlg(`<div class="dh">현장 나눠 입력 · ${esc(w.name)}</div><div class="db">
+    <p class="muted small" style="margin-top:0">${dlabel(d)} — 하루를 여러 현장에 나눠 기록합니다. 현장마다 시간과 공수를 넣으세요. 비워 두면 그 현장은 기록하지 않습니다.${S.settings.auto ? ' 출근·퇴근 시간을 넣으면 공수가 자동 계산됩니다.' : ''}</p>` +
+    sites.map(x => { const r = S.records[rk(d, wid, x.id)] || {};
+      return `<div class="card" style="padding:10px 12px;margin-bottom:8px" data-s="${x.id}"><b>${esc(x.name)}</b>${x.id === ui.site ? ' <span class="tag" style="background:#e3eefc;color:#1f4e79">현재 현장</span>' : ''}
+        <div class="fg" style="margin-top:6px"><label>출근<input type="time" class="sIn" value="${r.in || ''}"></label><label>퇴근<input type="time" class="sOut" value="${r.out || ''}"></label>
+        <label>공수<select class="sU">${unitOpts(r.u || 0, true, false)}</select></label></div></div>`; }).join('') +
+    `<p id="splitSum" class="small"><b></b></p></div><div class="df"><button onclick="closeDlg()">취소</button><button class="pri" data-act="splitSave">저장</button></div>`);
+  $('#dlg').dataset.wid = wid; splitSum();
+}
+function splitSum() {
+  const t = $$('#dlg .sU').reduce((a, el) => a + (parseFloat(el.value) || 0), 0), over = t > (S.settings.dayMax || 2);
+  const el = $('#splitSum'); if (el) el.innerHTML = `하루 합계 <b style="color:${over ? 'var(--bad)' : 'var(--ink)'}">${fu(t)}공수</b>${over ? ` — 기준(${fu(S.settings.dayMax)}공수)을 넘었습니다. 중복 입력이 아닌지 확인하세요.` : ''}`;
+}
+function splitRecalc(t) {
+  const card = t.closest('[data-s]'); if (!card) return;
+  if (!t.classList.contains('sU') && S.settings.auto) { const a = $('.sIn', card).value, b = $('.sOut', card).value; if (a && b) { const u = calcWork(a, b, card.dataset.s).u; if (u > 0) $('.sU', card).value = String(u); } }
+  splitSum();
+}
+function splitSave() {
+  const wid = $('#dlg').dataset.wid, d = ui.date, w = W(wid); let n = 0;
+  $$('#dlg [data-s]').forEach(card => {
+    const sid = card.dataset.s, u = parseFloat($('.sU', card).value) || 0, tin = $('.sIn', card).value, tout = $('.sOut', card).value, k = rk(d, wid, sid), prev = S.records[k];
+    if (!u && !tin && !tout) { delete S.records[k]; return; }
+    const rec = { u, r: prev ? prev.r : (w.rate || 0), t: Date.now() }; if (tin) rec.in = tin; if (tout) rec.out = tout; S.records[k] = rec; if (u) n++;
+  });
+  save(); closeDlg(); renderEntry(); toast(`${w.name}: ${n}개 현장에 나눠 기록 · 하루 합계 ${fu(dayTotal(d, wid))}공수`); dayWarn(wid);
+}
+
+/* ---- 같은 날 여러 현장 합계가 기준을 넘는 기록 점검 (중복 입력 의심) ---- */
 let dupCache = [];
 const wname = id => { const w = W(id); return w ? w.name : '?'; };
 function dupGroups(dateOnly) {
   const m = {};
   for (const [k, v] of Object.entries(S.records)) { const [d, w, sid] = k.split('|'); if (dateOnly && d !== dateOnly) continue; (m[d + '|' + w] = m[d + '|' + w] || []).push({ k, s: sid, v }); }
-  return Object.entries(m).filter(([, a]) => a.length > 1).map(([key, a]) => { const [d, w] = key.split('|'); return { d, w, items: a }; }).sort((x, y) => x.d.localeCompare(y.d) || wname(x.w).localeCompare(wname(y.w), 'ko'));
+  return Object.entries(m).filter(([, a]) => a.length > 1 && a.reduce((t, it) => t + (it.v.u || 0), 0) > (S.settings.dayMax || 2)).map(([key, a]) => { const [d, w] = key.split('|'); return { d, w, items: a }; }).sort((x, y) => x.d.localeCompare(y.d) || wname(x.w).localeCompare(wname(y.w), 'ko'));
 }
-function dupKeep(g) {   // 기본: 가장 나중에 입력한 기록. 입력시각이 없는 예전 기록은 현재 현장 기준
+function dupKeepLatest(g) {   // 기본: 가장 나중에 입력한 기록. 입력시각이 없는 예전 기록은 현재 현장 기준
   let best = 0; g.items.forEach((it, i) => { if ((it.v.t || 0) > (g.items[best].v.t || 0)) best = i; });
   if (!g.items.some(it => it.v.t)) { const j = g.items.findIndex(it => it.s === ui.site); if (j >= 0) best = j; }
   return best;
 }
 function dupDlg(dateOnly) {
-  dupCache = dupGroups(dateOnly); if (!dupCache.length) return toast('정리할 중복 기록이 없습니다');
-  openDlg(`<div class="dh">같은 날 중복 기록 정리</div><div class="db"><p class="muted small" style="margin-top:0">같은 인부가 같은 날 여러 현장에 입력돼 공수가 합산되고 있습니다. 남길 기록을 고르면 나머지는 삭제됩니다. 기본값은 <b>가장 나중에 입력한 기록</b>입니다. (입력 시각이 없는 예전 기록은 현재 선택된 현장 기준)</p>` +
-    dupCache.map((g, gi) => `<div class="card" style="padding:10px 12px;margin-bottom:8px"><b>${esc(wname(g.w))}</b> <span class="muted small">${dlabel(g.d)}</span>` +
-      g.items.map((it, i) => `<label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="radio" name="dg${gi}" value="${i}" ${i === dupKeep(g) ? 'checked' : ''}> <span>${esc((SITE(it.s) || {}).name || '?')} · ${it.v.off ? '휴무' : fu(it.v.u) + '공수'}${it.v.in || it.v.out ? ` · ${it.v.in || ''}~${it.v.out || ''}` : ''}${it.v.t ? ` <span class="muted small">(입력 ${new Date(it.v.t).toLocaleString('ko-KR')})</span>` : ''}</span></label>`).join('') + '</div>').join('') +
-    `</div><div class="df"><button onclick="closeDlg()">닫기</button><button class="pri" data-act="dupFix">선택대로 정리 (${dupCache.length}건)</button></div>`);
+  dupCache = dupGroups(dateOnly); if (!dupCache.length) return toast('점검할 기록이 없습니다');
+  openDlg(`<div class="dh">같은 날 여러 현장 합계 점검</div><div class="db"><p class="muted small" style="margin-top:0">같은 인부의 하루 현장 합계가 기준(${fu(S.settings.dayMax)}공수)을 넘은 날입니다. 오전·오후로 나눠 일한 게 맞으면 <b>모두 유지</b>를 그대로 두고, 중복 입력이었다면 <b>남길 기록</b>을 고르세요. 나머지는 삭제됩니다.</p>` +
+    dupCache.map((g, gi) => `<div class="card" style="padding:10px 12px;margin-bottom:8px"><b>${esc(wname(g.w))}</b> <span class="muted small">${dlabel(g.d)} · 합계 ${fu(g.items.reduce((t, it) => t + (it.v.u || 0), 0))}공수</span><label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="radio" name="dg${gi}" value="all" checked> <span>모두 유지 (현장을 나눠 일한 날)</span></label>` +
+      g.items.map((it, i) => `<label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="radio" name="dg${gi}" value="${i}"> <span>${esc((SITE(it.s) || {}).name || '?')} · ${it.v.off ? '휴무' : fu(it.v.u) + '공수'}${it.v.in || it.v.out ? ` · ${it.v.in || ''}~${it.v.out || ''}` : ''}${it.v.t ? ` <span class="muted small">(입력 ${new Date(it.v.t).toLocaleString('ko-KR')})</span>` : ''}</span></label>`).join('') + '</div>').join('') +
+    `</div><div class="df"><button onclick="closeDlg()">닫기</button><button class="pri" data-act="dupFix">선택대로 정리</button></div>`);
 }
 function dupFix() {
-  dupCache.forEach((g, gi) => { const r = $(`input[name=dg${gi}]:checked`), keep = r ? +r.value : 0; g.items.forEach((it, i) => { if (i !== keep) delete S.records[it.k]; }); });
-  const n = dupCache.length; dupCache = []; save(); closeDlg(); render(); toast(`중복 ${n}건을 정리했습니다`);
+  let n = 0; dupCache.forEach((g, gi) => { const r = $(`input[name=dg${gi}]:checked`); if (!r || r.value === 'all') return; const keep = +r.value; g.items.forEach((it, i) => { if (i !== keep) { delete S.records[it.k]; n++; } }); }); dupCache = []; save(); closeDlg(); render(); toast(n ? `중복 ${n}건을 삭제했습니다` : '변경 없이 닫았습니다 (모두 유지)');
 }
 function setDate(d) { ui.date = d; ui.sel = []; viewEntry(); saveUI(); }
 function selectedOrAll() { return ui.sel.length ? ui.sel.slice() : []; }
@@ -580,14 +615,15 @@ function bulkApply() {
   const ids = selectedOrAll(); if (!ids.length) return toast('일괄 입력할 인부를 먼저 체크하세요 (전체선택 가능)');
   const v = $('#bulkU').value, u = v === 'off' ? 'off' : parseFloat(v); let noRate = 0;
   ids.forEach(id => { setUnits(ui.date, id, ui.site, u); if (!W(id).rate) noRate++; });
-  save(); renderEntry(); toast(`${ids.length}명 ` + (u === 'off' ? '휴무 처리' : `${fu(u)}공수 입력`) + (noRate && u !== 'off' ? ` (단가 미설정 ${noRate}명)` : '') + ovTail());
+  save(); renderEntry(); toast(`${ids.length}명 ` + (u === 'off' ? '휴무 처리' : `${fu(u)}공수 입력`) + (noRate && u !== 'off' ? ` (단가 미설정 ${noRate}명)` : ''));
+  if (u !== 'off') dayWarn(ids);
 }
 function bulkTime() {
   const ids = selectedOrAll(); if (!ids.length) return toast('시간을 넣을 인부를 먼저 체크하세요 (전체선택 가능)');
   const a = $('#bIn').value, b = $('#bOut').value; if (!a || !b) return toast('출근·퇴근 시간을 모두 입력하세요');
   ids.forEach(id => setTimes(ui.date, id, ui.site, a, b)); save(); renderEntry();
   const cw = calcWork(a, b, ui.site);
-  toast(`${ids.length}명 ${a}~${b} (${fu(cw.net)}시간${cw.ot ? ', 잔업 ' + fu(cw.ot) + 'h' : ''})` + (S.settings.auto ? ` · ${fu(cw.u)}공수 자동 입력` : '') + ovTail());
+  toast(`${ids.length}명 ${a}~${b} (${fu(cw.net)}시간${cw.ot ? ', 잔업 ' + fu(cw.ot) + 'h' : ''})` + (S.settings.auto ? ` · ${fu(cw.u)}공수 자동 입력` : ''));
 }
 function bulkClear() {
   const ids = selectedOrAll(); if (!ids.length) return toast('삭제할 인부를 체크하세요');
@@ -598,11 +634,11 @@ function copyPrev() {
   for (let i = 0; i < 14; i++, d = addDays(d, -1)) { if (Object.keys(S.records).some(k => k.startsWith(d + '|') && k.endsWith('|' + ui.site))) { found = d; break; } }
   if (!found) return toast('최근 14일 안에 복사할 기록이 없습니다');
   const src = Object.entries(S.records).filter(([k]) => k.startsWith(found + '|') && k.endsWith('|' + ui.site));
-  const ex = src.filter(([k]) => hasRec(ui.date, k.split('|')[1])).length;
-  if (!confirm(`${dlabel(found)} 기록 ${src.length}건을 오늘 날짜로 복사할까요?` + (ex ? `\n(오늘 이미 입력된 ${ex}건은 복사한 내용으로 덮어씁니다)` : ''))) return;
+  const ex = src.filter(([k]) => S.records[rk(ui.date, k.split('|')[1], ui.site)]).length;
+  if (!confirm(`${dlabel(found)} 기록 ${src.length}건을 오늘 날짜로 복사할까요?` + (ex ? `\n(이 현장에 오늘 이미 입력된 ${ex}건은 복사한 내용으로 덮어씁니다)` : ''))) return;
   let c = 0;
-  src.forEach(([k, v]) => { const wid = k.split('|')[1]; if (!W(wid)) return; dropOthers(ui.date, wid, ui.site); S.records[rk(ui.date, wid, ui.site)] = { u: v.u, r: W(wid).rate || 0, t: Date.now(), ...(v.off ? { off: 1 } : {}), ...(v.in ? { in: v.in } : {}), ...(v.out ? { out: v.out } : {}) }; c++; });
-  save(); renderEntry(); toast(`${c}건 복사됨` + ovTail());
+  src.forEach(([k, v]) => { const wid = k.split('|')[1]; if (!W(wid)) return; S.records[rk(ui.date, wid, ui.site)] = { u: v.u, r: W(wid).rate || 0, t: Date.now(), ...(v.off ? { off: 1 } : {}), ...(v.in ? { in: v.in } : {}), ...(v.out ? { out: v.out } : {}) }; c++; });
+  save(); renderEntry(); toast(`${c}건 복사됨`);
 }
 function rangeModal() {
   const ids = ui.sel.length ? ui.sel : S.workers.filter(w => w.active).map(w => w.id);
@@ -614,7 +650,7 @@ function rangeModal() {
       <label>종료일<input type="date" id="rTo" value="${ui.date}"></label>
       <label>공수<select id="rU">${unitOpts(1, false, true)}</select></label>
       ${S.settings.times ? `<label>출근 (선택)<input type="time" id="rIn"></label><label>퇴근 (선택)<input type="time" id="rOut"></label>` : ''}
-      <label class="w2"><span style="color:var(--ink)"><input type="checkbox" id="rOver" checked> 이미 입력된 날은 이번 입력으로 덮어쓰기 <span class="muted small">(끄면 입력된 날은 건너뜀)</span></span></label>
+      <label class="w2"><span style="color:var(--ink)"><input type="checkbox" id="rOver" checked> 이 현장에 이미 입력된 날은 덮어쓰기 <span class="muted small">(끄면 건너뜀)</span></span></label>
       <label class="w2">제외할 요일<span class="chips" style="color:var(--ink)">${DOW.map((n, i) => `<label style="flex-direction:row;gap:4px;font-size:14px"><input type="checkbox" class="rDow" value="${i}" ${i === 0 ? 'checked' : ''}>${n}</label>`).join('')}</span></label>
     </div></div>
     <div class="df"><button onclick="closeDlg()">취소</button><button class="pri" data-act="rangeApply">입력</button></div>`);
@@ -629,8 +665,8 @@ function rangeApply() {
   if (!confirm(`${ids.length}명 × ${days.length}일 = ${ids.length * days.length}건을 ${u === 'off' ? '휴무' : fu(u) + '공수'}로 입력합니다. 계속할까요?`)) return;
   let c = 0;
   const ti = ($('#rIn') || {}).value || '', to = ($('#rOut') || {}).value || '';
-  days.forEach(d => ids.forEach(id => { if (!over && hasRec(d, id)) return; setUnits(d, id, ui.site, u); if (u !== 'off' && (ti || to)) { const rec = S.records[rk(d, id, ui.site)]; if (ti) rec.in = ti; if (to) rec.out = to; } c++; }));
-  save(); closeDlg(); renderEntry(); toast(`${c}건 입력됨` + ovTail());
+  days.forEach(d => ids.forEach(id => { if (!over && S.records[rk(d, id, ui.site)]) return; setUnits(d, id, ui.site, u); if (u !== 'off' && (ti || to)) { const rec = S.records[rk(d, id, ui.site)]; if (ti) rec.in = ti; if (to) rec.out = to; } c++; }));
+  save(); closeDlg(); renderEntry(); toast(`${c}건 입력됨`);
 }
 
 /* ====================== 인부 ====================== */
@@ -1051,7 +1087,9 @@ function viewSettings() {
       <input type="file" id="bkFile" accept=".json,application/json" hidden>
     </div>
     <p class="muted small" style="margin:0">마지막 수동 백업: ${lb} · 노트북에서 저장 파일을 <b>클라우드 동기화 폴더(OneDrive·구글 드라이브 등)</b>에 만들어 두면 PC가 고장 나도 안전합니다. 스마트폰은 브라우저 보안상 지정한 파일에 자동으로 쓸 수 없으므로, 위의 <b>📱 폰에 백업 저장</b>으로 "파일에 저장"·구글 드라이브·카카오톡 등에 보관하세요. 노트북과도 자동 동기화되지 않으니 백업 파일로 옮기세요.</p></div>
-  ${(() => { const n = dupGroups().length; return `<div class="card"><h2>🧹 같은 날 중복 기록</h2><p class="small" style="margin:0 0 8px">같은 날 같은 인부는 <b>하나만</b> 기록되고, 다시 입력하면 <b>나중 입력이 덮어씁니다</b>. ${n ? `<b style="color:var(--bad)">예전에 쌓인 중복 ${n}건</b>이 남아 있습니다.` : '중복 기록이 없습니다 ✅'}</p>${n ? '<button class="pri" data-act="dupAll">중복 기록 정리하기</button>' : ''}</div>`; })()}
+  ${(() => { const n = dupGroups().length; return `<div class="card"><h2>🔀 현장 나눠 일한 날 · 중복 입력 점검</h2><p class="small" style="margin:0 0 8px">기록은 <b>현장별</b>로 따로 저장됩니다. 같은 날 한 인부가 두 현장에서 일하면(오전 A현장, 오후 B현장 지원 등) 인부 줄의 <b>↔ 현장 나눠 입력</b>으로 기록하세요. 같은 현장에서 같은 날 다시 입력하면 <b>나중 값으로 덮어씁니다</b>. 실수로 두 현장에 중복 입력하는 것을 막기 위해, 하루 합계가 아래 기준을 넘으면 경고합니다.</p>
+    <label class="small" style="display:flex;gap:8px;align-items:center;color:var(--ink)">하루 합계 경고 기준 (공수) <input id="stDayMax" value="${S.settings.dayMax}" inputmode="decimal" style="width:80px"></label>
+    <p class="small" style="margin:8px 0 0">${n ? `<b style="color:var(--bad)">기준을 넘는 날이 ${n}건</b> 있습니다. ` : '기준을 넘는 날이 없습니다 ✅ '}${n ? '<button class="pri" data-act="dupAll">확인하기</button>' : ''}</p></div>`; })()}
   <div class="card"><h2>⏱ 출퇴근 시간 · 공수 자동 계산</h2>
     <p class="muted small" style="margin-top:0">공수 입력 화면에서 출근·퇴근 시간을 기록합니다. 자정을 넘기는 근무도 계산됩니다.</p>
     <div class="fg">
@@ -1082,6 +1120,7 @@ function readSettings() {
   S.company.name = $('#coName').value.trim(); S.company.owner = $('#coOwner').value.trim();
   S.settings.times = $('#stTimes').checked; S.settings.auto = $('#stAuto').checked;
   S.settings.std = Math.max(1, parseFloat($('#stStd').value) || 8); S.settings.brk = Math.max(0, parseInt($('#stBrk').value) || 0);
+  S.settings.dayMax = Math.max(0.5, parseFloat($('#stDayMax').value) || 2);
   S.settings.otBlock = parseFloat($('#stOtBlock').value) || 3; S.settings.otRound = $('#stOtRound').value;
   S.settings.defIn = $('#stIn').value || '07:00'; S.settings.defOut = $('#stOut').value || '16:00';
   const names = new Map(S.grades.map((g, i) => [i, g.name]));
@@ -1113,7 +1152,8 @@ const HELP = [
     <li><b>개별 입력</b>: 인부 줄의 <kbd>−</kbd> <kbd>+</kbd>는 0.5씩, 가운데 칸을 누르면 0.5~4.0, 휴무를 고를 수 있습니다.</li>
     <li><b>일괄 입력</b>: 인부를 체크(또는 <kbd>전체선택</kbd>) → 공수를 고르고 <kbd>선택 인원에 일괄 입력</kbd>. 잘못 넣었으면 <kbd>선택 삭제</kbd>.</li>
     <li><b>전날 복사</b>: 가장 최근 기록을 오늘로 복사합니다. 오늘 이미 입력한 인부는 복사한 내용으로 <b>덮어씁니다</b>.</li>
-    <li><b>중복 입력</b>: 같은 날 같은 인부는 <b>하나만</b> 기록됩니다. 다시 입력하면 공수가 쌓이지 않고 <b>나중 입력으로 덮어씁니다</b>. 다른 현장에 입력돼 있던 기록도 이번 입력으로 바뀝니다. (한 사람을 두 현장에 나눠 쓰려면 한 현장에 합쳐서 입력하세요.)</li>
+    <li><b>현장별 기록</b>: 기록은 날짜·인부·<b>현장별</b>로 따로 저장됩니다. 같은 현장에서 같은 날 다시 입력하면 공수가 쌓이지 않고 <b>나중 입력으로 덮어씁니다</b>.</li>
+    <li><b>오전엔 이 현장, 오후엔 다른 현장 지원</b>처럼 하루를 나눠 일했다면 인부 줄의 <kbd>↔ 현장 나눠 입력</kbd>을 누르세요. 현장마다 출근·퇴근 시간과 공수를 한 번에 넣을 수 있고, 줄에는 "🔀 B현장 0.5 · 합계 1.0"처럼 다른 현장 기록과 하루 합계가 표시됩니다. 하루 합계가 설정한 기준(기본 2.0공수)을 넘으면 중복 입력을 의심하라는 경고가 뜹니다.</li>
     <li><b>기간 일괄 입력</b>: 여러 날을 한 번에 넣습니다. 제외할 요일(기본: 일요일)을 정할 수 있습니다.</li>
     <li>아래 파란 바에 그날의 인원·공수·일당 합계가 나옵니다.</li>
     <li><b>출퇴근 시간</b>은 인부 줄의 <kbd>출근</kbd> <kbd>퇴근</kbd> 칸에 입력합니다. 자세한 내용은 아래 "출퇴근 시간" 항목을 보세요.</li>
@@ -1153,7 +1193,7 @@ const HELP = [
   ['sites', '🏗 현장 · 공사기간', ['settings'], `
     <ul><li>설정 탭에서 현장을 추가하고 시작일·종료일을 정합니다. 현장이 여러 개면 공수 입력 화면에서 현장을 골라 입력합니다.</li>
     <li>공사기간 밖의 날짜에 입력하면 <b>경고</b>가 뜹니다. (입력은 가능)</li>
-    <li>같은 날 같은 인부는 한 현장에만 기록됩니다. 다른 현장에 입력돼 있으면 "다른 현장 N공수"로 표시되고, 여기에 입력하면 그 기록은 이번 입력으로 바뀝니다.</li>
+    <li>같은 날 한 인부를 두 현장에 나눠 기록할 수 있습니다. 다른 현장에 기록이 있으면 "🔀 현장명 공수 · 합계"로 표시됩니다. (인부 줄의 <b>↔ 현장 나눠 입력</b> 사용)</li>
     <li>끝난 현장은 삭제하지 말고 <b>진행 체크를 해제</b>하세요. 기록이 유지됩니다.</li></ul>`],
   ['save', '💾 저장 · 백업', [], `
     <ul><li>입력하면 이 기기의 브라우저에 <b>바로 자동 저장</b>됩니다.</li>
@@ -1171,7 +1211,7 @@ const HELP = [
     <li>⚠ 노트북과 스마트폰의 데이터는 <b>따로 저장</b>됩니다. 자동으로 합쳐지지 않으니 백업 파일로 옮기세요.</li></ul>`],
   ['faq', '❓ 자주 묻는 질문', ['settings'], `
     <p><b>Q. 데이터가 사라졌어요.</b><br>다른 주소나 다른 브라우저로 열면 데이터가 따로 보입니다. 처음 쓰던 주소·브라우저로 열어보고, 백업 파일이 있으면 설정에서 불러오세요.</p>
-    <p><b>Q. 같은 날 공수가 두 번 더해져요.</b><br>예전에 두 현장에 각각 입력한 기록이 남아 있는 경우입니다. 설정 탭의 <b>중복 기록 정리하기</b>(또는 입력 화면의 경고 줄)에서 남길 기록을 고르세요. 지금부터는 다시 입력하면 나중 입력으로 덮어씁니다.</p>
+    <p><b>Q. 같은 날 공수가 두 번 더해져요.</b><br>같은 현장에서는 다시 입력하면 덮어쓰므로 쌓이지 않습니다. 더해진다면 <b>다른 현장에도</b> 같은 날 기록이 있는 경우입니다. 인부 줄의 "🔀 현장명 공수" 표시를 확인하고, 중복이면 입력 화면 위 경고(또는 설정 탭)의 <b>확인하기</b>에서 남길 기록을 고르세요.</p>
     <p><b>Q. 공수를 잘못 넣었어요.</b><br>같은 칸에서 다시 고르면 바뀝니다. "-"를 고르면 입력이 지워집니다.</p>
     <p><b>Q. 단가가 0원으로 나와요.</b><br>인부 정보에서 일당을 입력하세요. "단가 미설정" 표시가 붙은 인부는 일당이 0원으로 계산됩니다.</p>
     <p><b>Q. 4.0공수보다 많이 넣고 싶어요.</b><br>한 칸에는 최대 4.0까지입니다. 현장을 나누어 입력하거나 요청해 주세요.</p>
@@ -1200,6 +1240,7 @@ const A = {
   inc(el) { const id = el.closest('.row').dataset.w, r = S.records[rk(ui.date, id, ui.site)]; changeUnits(id, (r ? r.u : 0) + 0.5); },
   toggleTools() { ui.tools = !ui.tools; saveUI(); viewEntry(); },
   dupOpen() { dupDlg(ui.date); }, dupAll() { dupDlg(); }, dupFix,
+  splitOpen(el) { splitDlg(el.closest('.row').dataset.w); }, splitSave,
   bulkApply, bulkClear, bulkTime, copyPrev, rangeModal, rangeApply,
   newWorker() { workerForm(null); }, editWorker(el) { workerForm(W(el.dataset.w)); }, saveWorker, delWorker,
   rpMonth(el) { const d = new Date(); d.setMonth(d.getMonth() + (+el.dataset.d), 1); ui.from = iso(d); ui.to = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0)); viewReport(); },
@@ -1230,7 +1271,8 @@ document.addEventListener('change', e => {
   else if (t.id === 'dSite') { ui.site = t.value; ui.sel = []; saveUI(); renderEntry(); }
   else if (t.id === 'chkAll') { const ws = entryWorkers().map(w => w.id); ui.sel = t.checked ? ws : []; $$('.row .sel').forEach(c => c.checked = t.checked); }
   else if (t.classList.contains('sel') && t.closest('.row')) { const id = t.closest('.row').dataset.w; ui.sel = t.checked ? [...new Set([...ui.sel, id])] : ui.sel.filter(x => x !== id); }
-  else if (t.classList.contains('tin') || t.classList.contains('tout')) { const row = t.closest('.row'), id = row.dataset.w; setTimes(ui.date, id, ui.site, $('.tin', row).value, $('.tout', row).value); save(); softRow(id); ovToast(); }
+  else if (t.classList.contains('sIn') || t.classList.contains('sOut') || t.classList.contains('sU')) splitRecalc(t);
+  else if (t.classList.contains('tin') || t.classList.contains('tout')) { const row = t.closest('.row'), id = row.dataset.w; setTimes(ui.date, id, ui.site, $('.tin', row).value, $('.tout', row).value); save(); softRow(id); dayWarn(id); }
   else if (t.classList.contains('usel')) changeUnits(t.closest('.row').dataset.w, t.value === 'off' ? 'off' : (parseFloat(t.value) || 0));
   else if (t.id === 'dGrade' || t.id === 'dOnly') renderEntry();
   else if (t.id === 'wGrade' || t.id === 'wInact') renderWorkers();

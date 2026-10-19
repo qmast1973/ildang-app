@@ -78,6 +78,13 @@ details.card>summary{cursor:pointer}
 .ctl button{width:44px;font-size:20px;font-weight:700;padding:0}
 .ctl select{width:84px;text-align:center;font-weight:700;font-size:16px}
 .amt{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.cal .ch{text-align:center;font-weight:700;font-size:13px;padding:4px 0}
+.cal .cd{display:flex;flex-direction:column;align-items:flex-start;gap:1px;min-height:62px;padding:5px 6px;border-radius:8px;text-align:left;white-space:normal;font-size:13px}
+.cal .cd .dn{font-weight:700}.cal .cd .cc{font-weight:700;color:var(--ok)}.cal .cd .ca{font-size:11.5px;color:var(--mute)}
+.cal .cd.has{background:var(--on);border-color:#9fd1b1}.cal .cd.other{background:#f1f3f6}
+.cal .cd.cur{outline:3px solid var(--pri);outline-offset:-2px}.cal .cd.tod .dn{text-decoration:underline}
+.cal .sun{color:var(--bad)}.cal .sat{color:#1f5fbf}
 .mini{font-size:12.5px;min-height:30px;padding:2px 9px;margin-top:5px;border-radius:7px;color:var(--pri)}
 .tag.bad{background:#fde0dc;color:#8c1d12}
 .tag{display:inline-block;font-size:12.5px;font-weight:600;background:#fde8c8;color:#7a4400;border-radius:6px;padding:1px 6px;margin-left:6px}
@@ -453,6 +460,7 @@ function viewEntry() {
       <input type="date" id="dDate" value="${ui.date}">
       <button data-act="dnext" aria-label="다음날">▶</button>
       <button data-act="dtoday">오늘</button>
+      <button data-act="calOpen" title="달력으로 날짜별 입력 현황 보기">📅 입력 현황</button>
     </div>
     <span class="dlabel" id="dLabel"></span>
     <span style="flex:1"></span>
@@ -550,7 +558,9 @@ function updateRow(wid) {
 }
 function changeUnits(wid, u) {
   if (u !== 'off') u = Math.max(0, Math.min(4, u));
-  setUnits(ui.date, wid, ui.site, u); save(); updateRow(wid); dayWarn(wid);
+  const go = () => { setUnits(ui.date, wid, ui.site, u); save(); updateRow(wid); dayWarn(wid); };
+  if (!u) return go();
+  guardConflicts(conflictsFor([ui.date], [wid], ui.site), n => { go(); if (n) toast('다른 현장의 중복 기록을 지우고 이 현장으로 바꿨습니다'); }, () => updateRow(wid));
 }
 
 
@@ -608,22 +618,79 @@ function dupDlg(dateOnly) {
 function dupFix() {
   let n = 0; dupCache.forEach((g, gi) => { const r = $(`input[name=dg${gi}]:checked`); if (!r || r.value === 'all') return; const keep = +r.value; g.items.forEach((it, i) => { if (i !== keep) { delete S.records[it.k]; n++; } }); }); dupCache = []; save(); closeDlg(); render(); toast(n ? `중복 ${n}건을 삭제했습니다` : '변경 없이 닫았습니다 (모두 유지)');
 }
+
+/* ---- 새로 입력하는 인부가 같은 날 다른 현장에 이미 기록돼 있으면 확인 (몰아서 입력할 때 중복 방지) ---- */
+const otherRecs = (d, wid, sid) => S.sites.filter(x => x.id !== sid && S.records[rk(d, wid, x.id)]).map(x => ({ sid: x.id, name: x.name, r: S.records[rk(d, wid, x.id)] }));
+function conflictsFor(days, ids, sid) {   // 이 현장엔 아직 없고, 다른 현장엔 있는 (날짜, 인부)
+  const out = [];
+  days.forEach(d => ids.forEach(id => { if (S.records[rk(d, id, sid)]) return; const o = otherRecs(d, id, sid); if (o.length) out.push({ d, id, o }); }));
+  return out;
+}
+let conflictCb = null;
+function guardConflicts(list, proceed, onCancel) {
+  if (!list.length) return proceed();
+  conflictCb = { list, proceed, onCancel };
+  const show = list.slice(0, 40), st = SITE(ui.site);
+  openDlg(`<div class="dh">⚠ 같은 날 다른 현장에 이미 입력돼 있습니다</div><div class="db">
+    <p class="small" style="margin-top:0">아래 <b>${list.length}건</b>은 같은 날 <b>다른 현장</b>에 이미 기록이 있습니다. 이번에 <b>${esc(st.name)}</b>에 입력하면 어떻게 할까요?</p>
+    <div class="scroll"><table class="tbl"><thead><tr><th>날짜</th><th>이름</th><th>이미 있는 기록</th></tr></thead><tbody>${show.map(c => `<tr><td>${dshort(c.d)}</td><td>${esc(wname(c.id))}</td><td>${c.o.map(o => esc(o.name) + ' ' + (o.r.off ? '휴무' : fu(o.r.u) + '공수')).join(', ')}</td></tr>`).join('')}${list.length > 40 ? `<tr><td colspan="3" class="muted">… 외 ${list.length - 40}건</td></tr>` : ''}</tbody></table></div>
+    <ul class="small" style="margin-bottom:0"><li><b>이 현장으로 바꾸기</b>: 다른 현장 기록은 지우고 이번 입력만 남깁니다. <span class="muted">(이미 넣었는데 또 넣은 경우)</span></li><li><b>둘 다 유지</b>: 하루를 두 현장에서 나눠 일한 경우입니다.</li><li><b>입력 취소</b>: 아무것도 바꾸지 않습니다.</li></ul></div>
+    <div class="df"><button data-act="cfCancel">입력 취소</button><button data-act="cfKeep">둘 다 유지 (나눠 일함)</button><button class="pri" data-act="cfMove">이 현장으로 바꾸기</button></div>`);
+}
+function cfDone(mode) {
+  const c = conflictCb; conflictCb = null; closeDlg(); if (!c) return;
+  if (mode === 'cancel') { if (c.onCancel) c.onCancel(); return; }
+  if (mode === 'move') c.list.forEach(x => x.o.forEach(o => { delete S.records[rk(x.d, x.id, o.sid)]; }));
+  c.proceed(mode === 'move' ? c.list.length : 0);
+}
+const movedTail = n => n ? ` · 다른 현장의 중복 ${n}건은 지움` : '';
+
+/* ---- 월간 입력 현황 달력 ---- */
+function calDlg(m) {
+  m = m || ui.date.slice(0, 7); ui.calM = m;
+  const [y, mo] = m.split('-').map(Number), first = new Date(y, mo - 1, 1).getDay(), n = new Date(y, mo, 0).getDate();
+  const here = {}, all = {}, off = {};
+  for (const [k, v] of Object.entries(S.records)) {
+    if (!k.startsWith(m)) continue; const [d, w, sid] = k.split('|');
+    if (v.off) { if (sid === ui.site) off[d] = (off[d] || 0) + 1; continue; }
+    if (!v.u) continue;
+    (all[d] = all[d] || new Set()).add(w); if (sid === ui.site) here[d] = (here[d] || 0) + 1;
+  }
+  const warnD = new Set(dupGroups().filter(g => g.d.startsWith(m)).map(g => g.d)), st = SITE(ui.site);
+  let cells = DOW.map((x, i) => `<div class="ch ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${x}</div>`).join('') + '<div></div>'.repeat(first);
+  for (let i = 1; i <= n; i++) {
+    const d = `${m}-${pad(i)}`, dw = parseD(d).getDay(), h = here[d] || 0, a = all[d] ? all[d].size : 0;
+    cells += `<button class="cd ${h ? 'has' : a ? 'other' : ''} ${d === ui.date ? 'cur' : ''} ${d === today() ? 'tod' : ''} ${dw === 0 ? 'sun' : dw === 6 ? 'sat' : ''}" data-act="calGo" data-d="${d}">
+      <span class="dn">${i}${warnD.has(d) ? ' ⚠' : ''}</span><span class="cc">${h ? h + '명' : ''}${off[d] ? `<small> 휴${off[d]}</small>` : ''}</span>${a > h ? `<span class="ca">전체 ${a}명</span>` : ''}</button>`;
+  }
+  openDlg(`<div class="dh">📅 입력 현황 · ${esc(st.name)}</div><div class="db">
+    <div class="bar" style="justify-content:center"><button data-act="calPrev">◀</button><b style="font-size:17px">${y}년 ${mo}월</b><button data-act="calNext">▶</button></div>
+    <div class="cal">${cells}</div>
+    <p class="small muted" style="margin-bottom:0"><b style="color:var(--ok)">초록</b> = 이 현장에 입력한 날 (N명), <b>회색</b> = 다른 현장에만 입력한 날, ⚠ = 하루 합계 기준을 넘는 인부가 있는 날. 날짜를 누르면 그 날 입력 화면으로 이동합니다.</p></div>
+    <div class="df"><button class="pri" onclick="closeDlg()">닫기</button></div>`);
+}
 function setDate(d) { ui.date = d; ui.sel = []; viewEntry(); saveUI(); }
 function selectedOrAll() { return ui.sel.length ? ui.sel.slice() : []; }
 
 function bulkApply() {
   const ids = selectedOrAll(); if (!ids.length) return toast('일괄 입력할 인부를 먼저 체크하세요 (전체선택 가능)');
-  const v = $('#bulkU').value, u = v === 'off' ? 'off' : parseFloat(v); let noRate = 0;
-  ids.forEach(id => { setUnits(ui.date, id, ui.site, u); if (!W(id).rate) noRate++; });
-  save(); renderEntry(); toast(`${ids.length}명 ` + (u === 'off' ? '휴무 처리' : `${fu(u)}공수 입력`) + (noRate && u !== 'off' ? ` (단가 미설정 ${noRate}명)` : ''));
-  if (u !== 'off') dayWarn(ids);
+  const v = $('#bulkU').value, u = v === 'off' ? 'off' : parseFloat(v);
+  guardConflicts(conflictsFor([ui.date], ids, ui.site), mv => {
+    let noRate = 0;
+    ids.forEach(id => { setUnits(ui.date, id, ui.site, u); if (!W(id).rate) noRate++; });
+    save(); renderEntry(); toast(`${ids.length}명 ` + (u === 'off' ? '휴무 처리' : `${fu(u)}공수 입력`) + (noRate && u !== 'off' ? ` (단가 미설정 ${noRate}명)` : '') + movedTail(mv));
+    if (u !== 'off') dayWarn(ids);
+  });
 }
 function bulkTime() {
   const ids = selectedOrAll(); if (!ids.length) return toast('시간을 넣을 인부를 먼저 체크하세요 (전체선택 가능)');
   const a = $('#bIn').value, b = $('#bOut').value; if (!a || !b) return toast('출근·퇴근 시간을 모두 입력하세요');
-  ids.forEach(id => setTimes(ui.date, id, ui.site, a, b)); save(); renderEntry();
-  const cw = calcWork(a, b, ui.site);
-  toast(`${ids.length}명 ${a}~${b} (${fu(cw.net)}시간${cw.ot ? ', 잔업 ' + fu(cw.ot) + 'h' : ''})` + (S.settings.auto ? ` · ${fu(cw.u)}공수 자동 입력` : ''));
+  guardConflicts(conflictsFor([ui.date], ids, ui.site), mv => {
+    ids.forEach(id => setTimes(ui.date, id, ui.site, a, b)); save(); renderEntry();
+    const cw = calcWork(a, b, ui.site);
+    toast(`${ids.length}명 ${a}~${b} (${fu(cw.net)}시간${cw.ot ? ', 잔업 ' + fu(cw.ot) + 'h' : ''})` + (S.settings.auto ? ` · ${fu(cw.u)}공수 자동 입력` : '') + movedTail(mv));
+    dayWarn(ids);
+  });
 }
 function bulkClear() {
   const ids = selectedOrAll(); if (!ids.length) return toast('삭제할 인부를 체크하세요');
@@ -636,9 +703,12 @@ function copyPrev() {
   const src = Object.entries(S.records).filter(([k]) => k.startsWith(found + '|') && k.endsWith('|' + ui.site));
   const ex = src.filter(([k]) => S.records[rk(ui.date, k.split('|')[1], ui.site)]).length;
   if (!confirm(`${dlabel(found)} 기록 ${src.length}건을 오늘 날짜로 복사할까요?` + (ex ? `\n(이 현장에 오늘 이미 입력된 ${ex}건은 복사한 내용으로 덮어씁니다)` : ''))) return;
+  const wids = src.map(([k]) => k.split('|')[1]).filter(w => W(w));
+  guardConflicts(conflictsFor([ui.date], wids, ui.site), mv => {
   let c = 0;
   src.forEach(([k, v]) => { const wid = k.split('|')[1]; if (!W(wid)) return; S.records[rk(ui.date, wid, ui.site)] = { u: v.u, r: W(wid).rate || 0, t: Date.now(), ...(v.off ? { off: 1 } : {}), ...(v.in ? { in: v.in } : {}), ...(v.out ? { out: v.out } : {}) }; c++; });
-  save(); renderEntry(); toast(`${c}건 복사됨`);
+  save(); renderEntry(); toast(`${c}건 복사됨` + movedTail(mv)); dayWarn(wids);
+  });
 }
 function rangeModal() {
   const ids = ui.sel.length ? ui.sel : S.workers.filter(w => w.active).map(w => w.id);
@@ -663,10 +733,13 @@ function rangeApply() {
   const days = []; for (let d = f; d <= t; d = addDays(d, 1)) if (!skip.includes(parseD(d).getDay())) days.push(d);
   if (days.length > 366) return toast('기간이 너무 깁니다 (최대 1년)');
   if (!confirm(`${ids.length}명 × ${days.length}일 = ${ids.length * days.length}건을 ${u === 'off' ? '휴무' : fu(u) + '공수'}로 입력합니다. 계속할까요?`)) return;
-  let c = 0;
   const ti = ($('#rIn') || {}).value || '', to = ($('#rOut') || {}).value || '';
+  closeDlg();
+  guardConflicts(conflictsFor(days, ids, ui.site), mv => {
+  let c = 0;
   days.forEach(d => ids.forEach(id => { if (!over && S.records[rk(d, id, ui.site)]) return; setUnits(d, id, ui.site, u); if (u !== 'off' && (ti || to)) { const rec = S.records[rk(d, id, ui.site)]; if (ti) rec.in = ti; if (to) rec.out = to; } c++; }));
-  save(); closeDlg(); renderEntry(); toast(`${c}건 입력됨`);
+  save(); renderEntry(); toast(`${c}건 입력됨` + movedTail(mv));
+  });
 }
 
 /* ====================== 인부 ====================== */
@@ -1152,6 +1225,7 @@ const HELP = [
     <li><b>개별 입력</b>: 인부 줄의 <kbd>−</kbd> <kbd>+</kbd>는 0.5씩, 가운데 칸을 누르면 0.5~4.0, 휴무를 고를 수 있습니다.</li>
     <li><b>일괄 입력</b>: 인부를 체크(또는 <kbd>전체선택</kbd>) → 공수를 고르고 <kbd>선택 인원에 일괄 입력</kbd>. 잘못 넣었으면 <kbd>선택 삭제</kbd>.</li>
     <li><b>전날 복사</b>: 가장 최근 기록을 오늘로 복사합니다. 오늘 이미 입력한 인부는 복사한 내용으로 <b>덮어씁니다</b>.</li>
+    <li><b>몰아서 입력할 때</b>: 날짜 옆 <kbd>📅 입력 현황</kbd>을 누르면 달력에 날짜별 입력 인원이 표시돼, 어느 날까지 넣었는지 바로 보입니다. 같은 날 <b>다른 현장</b>에 이미 기록된 인부를 또 입력하면 확인창이 떠서 <b>이 현장으로 바꾸기</b>(중복이었을 때) / <b>둘 다 유지</b>(나눠 일했을 때) / <b>취소</b> 중에 고를 수 있습니다.</li>
     <li><b>현장별 기록</b>: 기록은 날짜·인부·<b>현장별</b>로 따로 저장됩니다. 같은 현장에서 같은 날 다시 입력하면 공수가 쌓이지 않고 <b>나중 입력으로 덮어씁니다</b>.</li>
     <li><b>오전엔 이 현장, 오후엔 다른 현장 지원</b>처럼 하루를 나눠 일했다면 인부 줄의 <kbd>↔ 현장 나눠 입력</kbd>을 누르세요. 현장마다 출근·퇴근 시간과 공수를 한 번에 넣을 수 있고, 줄에는 "🔀 B현장 0.5 · 합계 1.0"처럼 다른 현장 기록과 하루 합계가 표시됩니다. 하루 합계가 설정한 기준(기본 2.0공수)을 넘으면 중복 입력을 의심하라는 경고가 뜹니다.</li>
     <li><b>기간 일괄 입력</b>: 여러 날을 한 번에 넣습니다. 제외할 요일(기본: 일요일)을 정할 수 있습니다.</li>
@@ -1240,6 +1314,10 @@ const A = {
   inc(el) { const id = el.closest('.row').dataset.w, r = S.records[rk(ui.date, id, ui.site)]; changeUnits(id, (r ? r.u : 0) + 0.5); },
   toggleTools() { ui.tools = !ui.tools; saveUI(); viewEntry(); },
   dupOpen() { dupDlg(ui.date); }, dupAll() { dupDlg(); }, dupFix,
+  cfMove() { cfDone('move'); }, cfKeep() { cfDone('keep'); }, cfCancel() { cfDone('cancel'); },
+  calOpen() { calDlg(); }, calGo(el) { closeDlg(); setDate(el.dataset.d); },
+  calPrev() { const [y, m] = ui.calM.split('-').map(Number); calDlg(m === 1 ? `${y - 1}-12` : `${y}-${pad(m - 1)}`); },
+  calNext() { const [y, m] = ui.calM.split('-').map(Number); calDlg(m === 12 ? `${y + 1}-01` : `${y}-${pad(m + 1)}`); },
   splitOpen(el) { splitDlg(el.closest('.row').dataset.w); }, splitSave,
   bulkApply, bulkClear, bulkTime, copyPrev, rangeModal, rangeApply,
   newWorker() { workerForm(null); }, editWorker(el) { workerForm(W(el.dataset.w)); }, saveWorker, delWorker,
@@ -1272,7 +1350,7 @@ document.addEventListener('change', e => {
   else if (t.id === 'chkAll') { const ws = entryWorkers().map(w => w.id); ui.sel = t.checked ? ws : []; $$('.row .sel').forEach(c => c.checked = t.checked); }
   else if (t.classList.contains('sel') && t.closest('.row')) { const id = t.closest('.row').dataset.w; ui.sel = t.checked ? [...new Set([...ui.sel, id])] : ui.sel.filter(x => x !== id); }
   else if (t.classList.contains('sIn') || t.classList.contains('sOut') || t.classList.contains('sU')) splitRecalc(t);
-  else if (t.classList.contains('tin') || t.classList.contains('tout')) { const row = t.closest('.row'), id = row.dataset.w; setTimes(ui.date, id, ui.site, $('.tin', row).value, $('.tout', row).value); save(); softRow(id); dayWarn(id); }
+  else if (t.classList.contains('tin') || t.classList.contains('tout')) { const row = t.closest('.row'), id = row.dataset.w, a = $('.tin', row).value, b = $('.tout', row).value, go = () => { setTimes(ui.date, id, ui.site, a, b); save(); if ($(`.row[data-w="${id}"] .tin`)) softRow(id); else updateRow(id); dayWarn(id); }; if (!a && !b) go(); else guardConflicts(conflictsFor([ui.date], [id], ui.site), go, () => updateRow(id)); }
   else if (t.classList.contains('usel')) changeUnits(t.closest('.row').dataset.w, t.value === 'off' ? 'off' : (parseFloat(t.value) || 0));
   else if (t.id === 'dGrade' || t.id === 'dOnly') renderEntry();
   else if (t.id === 'wGrade' || t.id === 'wInact') renderWorkers();
@@ -1304,6 +1382,7 @@ function welcome() {
   const b = $('#wlcFile'); if (b) b.onclick = async () => { closeDlg(); await createFile(); };
   S.meta.setupDone = true; save();
 }
+$('#dlg').addEventListener('cancel', () => { if (conflictCb) { const c = conflictCb; conflictCb = null; if (c.onCancel) setTimeout(c.onCancel); } });
 load();
 render();
 initFile().then(recover).then(() => { if (!S.meta.setupDone) welcome(); else if (fileHandle && !filePerm) toast('저장 파일 재연결이 필요합니다. 위쪽 노란 버튼을 눌러주세요'); });
